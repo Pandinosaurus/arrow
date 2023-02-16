@@ -28,6 +28,7 @@
 #endif
 
 #include "arrow/compute/api_scalar.h"
+#include "arrow/compute/exec.h"
 #include "arrow/compute/kernels/codegen_internal.h"
 #include "arrow/compute/kernels/test_util.h"
 #include "arrow/testing/gtest_util.h"
@@ -392,6 +393,15 @@ TYPED_TEST(TestBinaryKernels, NonUtf8WithNullRegex) {
 }
 #endif
 
+TYPED_TEST(TestBinaryKernels, BinaryReverse) {
+  this->CheckUnary(
+      "binary_reverse",
+      this->template MakeArray<std::string>(
+          {{"abc123", 6}, {"\x00\x00\x42\xfe\xff", 5}, {"\xf0", 1}, {"", 0}}),
+      this->template MakeArray<std::string>(
+          {{"321cba", 6}, {"\xff\xfe\x42\x00\x00", 5}, {"\xf0", 1}, {"", 0}}));
+}
+
 TYPED_TEST(TestBaseBinaryKernels, BinaryReplaceSlice) {
   ReplaceSliceOptions options{0, 1, "XX"};
   this->CheckUnary("binary_replace_slice", "[]", this->type(), "[]", &options);
@@ -485,6 +495,16 @@ TYPED_TEST(TestBaseBinaryKernels, FindSubstringRegex) {
   this->CheckUnary("find_substring_regex", R"(["a", "A", "baaa", null, "", "AaaA"])",
                    this->offset_type(), "[0, 0, 1, null, -1, 0]", &options);
 }
+
+TYPED_TEST(TestBaseBinaryKernels, FindSubstringRegexWrongPattern) {
+  MatchSubstringOptions options{"(a", /*ignore_case=*/false};
+
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      Invalid, ::testing::HasSubstr("Invalid regular expression"),
+      CallFunction("find_substring_regex",
+                   {Datum(R"(["a", "A", "baaa", null, "", "AaaA"])")}, &options));
+}
+
 #else
 TYPED_TEST(TestBaseBinaryKernels, FindSubstringIgnoreCase) {
   MatchSubstringOptions options{"a+", /*ignore_case=*/true};
@@ -667,7 +687,8 @@ TYPED_TEST(TestBaseBinaryKernels, BinaryJoinElementWise) {
                      ty, R"([null, null, null, null])", &options_replace);
 
   // Error cases
-  ASSERT_RAISES(Invalid, CallFunction("binary_join_element_wise", {}, &options));
+  ASSERT_RAISES(Invalid,
+                CallFunction("binary_join_element_wise", ExecBatch({}, 0), &options));
 }
 
 class TestFixedSizeBinaryKernels : public ::testing::Test {
@@ -929,6 +950,81 @@ TYPED_TEST(TestStringKernels, Utf8Reverse) {
   const Result<Datum>& res = CallFunction("utf8_reverse", {malformed_input});
   ASSERT_TRUE(res->array()->buffers[1]->Equals(*malformed_input->data()->buffers[1]));
 }
+
+#ifdef ARROW_WITH_UTF8PROC
+
+TYPED_TEST(TestStringKernels, Utf8Normalize) {
+  Utf8NormalizeOptions nfc_options{Utf8NormalizeOptions::NFC};
+  Utf8NormalizeOptions nfkc_options{Utf8NormalizeOptions::NFKC};
+  Utf8NormalizeOptions nfd_options{Utf8NormalizeOptions::NFD};
+  Utf8NormalizeOptions nfkd_options{Utf8NormalizeOptions::NFKD};
+
+  std::vector<Utf8NormalizeOptions> all_options{nfc_options, nfkc_options, nfd_options,
+                                                nfkd_options};
+  std::vector<Utf8NormalizeOptions> compose_options{nfc_options, nfkc_options};
+  std::vector<Utf8NormalizeOptions> decompose_options{nfd_options, nfkd_options};
+  std::vector<Utf8NormalizeOptions> canonical_options{nfc_options, nfd_options};
+  std::vector<Utf8NormalizeOptions> compatibility_options{nfkc_options, nfkd_options};
+
+  for (const auto& options : all_options) {
+    this->CheckUnary("utf8_normalize", "[]", this->type(), "[]", &options);
+    const char* json_data = R"([null, "", "abc"])";
+    this->CheckUnary("utf8_normalize", json_data, this->type(), json_data, &options);
+  }
+
+  // decomposed: U+0061(LATIN SMALL LETTER A) + U+0301(COMBINING ACUTE ACCENT)
+  // composed: U+00E1(LATIN SMALL LETTER A WITH ACUTE)
+  const char* json_composed = "[\"foo\", \"á\"]";
+  const char* json_decomposed = "[\"foo\", \"a\xcc\x81\"]";
+  for (const auto& options : compose_options) {
+    this->CheckUnary("utf8_normalize", json_decomposed, this->type(), json_composed,
+                     &options);
+    this->CheckUnary("utf8_normalize", json_composed, this->type(), json_composed,
+                     &options);
+  }
+  for (const auto& options : decompose_options) {
+    this->CheckUnary("utf8_normalize", json_composed, this->type(), json_decomposed,
+                     &options);
+    this->CheckUnary("utf8_normalize", json_decomposed, this->type(), json_decomposed,
+                     &options);
+  }
+
+  // canonical: U+00B2(Superscript Two)
+  // compatibility: "2"
+  const char* json_canonical = "[\"01\xc2\xb2!\"]";
+  const char* json_compatibility = "[\"012!\"]";
+  for (const auto& options : canonical_options) {
+    this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_canonical,
+                     &options);
+    this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
+                     json_compatibility, &options);
+  }
+  for (const auto& options : compatibility_options) {
+    this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_compatibility,
+                     &options);
+    this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
+                     json_compatibility, &options);
+  }
+
+  // canonical: U+FDFA(Arabic Ligature Sallallahou Alayhe Wasallam)
+  // compatibility: <18 codepoints>
+  json_canonical = "[\"\xef\xb7\xba\"]";
+  json_compatibility = "[\"صلى الله عليه وسلم\"]";
+  for (const auto& options : canonical_options) {
+    this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_canonical,
+                     &options);
+    this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
+                     json_compatibility, &options);
+  }
+  for (const auto& options : compatibility_options) {
+    this->CheckUnary("utf8_normalize", json_canonical, this->type(), json_compatibility,
+                     &options);
+    this->CheckUnary("utf8_normalize", json_compatibility, this->type(),
+                     json_compatibility, &options);
+  }
+}
+
+#endif
 
 TEST(TestStringKernels, LARGE_MEMORY_TEST(Utf8Upper32bitGrowth)) {
   // 0x7fff * 0xffff is the max a 32 bit string array can hold
@@ -1539,6 +1635,7 @@ TYPED_TEST(TestStringKernels, SplitWhitespaceAsciiReverse) {
                    &options_max);
 }
 
+#ifdef ARROW_WITH_UTF8PROC
 TYPED_TEST(TestStringKernels, SplitWhitespaceUTF8) {
   SplitOptions options;
   SplitOptions options_max{1};
@@ -1563,6 +1660,7 @@ TYPED_TEST(TestStringKernels, SplitWhitespaceUTF8Reverse) {
                    "[[\"foo\", \"bar\"], [\"foo\xe2\x80\x88  bar\", \"ba\"]]",
                    &options_max);
 }
+#endif
 
 #ifdef ARROW_WITH_RE2
 TYPED_TEST(TestBaseBinaryKernels, SplitRegex) {
@@ -1666,6 +1764,11 @@ TYPED_TEST(TestBaseBinaryKernels, ReplaceSubstringRegex) {
   this->CheckUnary("replace_substring_regex", R"(["aaaaaa"])", this->type(),
                    R"(["abaaaaabaaaa"])", &options);
 
+  // ARROW-18202: Allow matching against empty string again
+  options = ReplaceSubstringOptions{"^$", "x"};
+  this->CheckUnary("replace_substring_regex", R"([""])", this->type(), R"(["x"])",
+                   &options);
+
   // ARROW-12774
   options = ReplaceSubstringOptions{"X", "Y"};
   this->CheckUnary("replace_substring_regex",
@@ -1754,14 +1857,34 @@ TYPED_TEST(TestBaseBinaryKernels, ExtractRegexInvalid) {
 #endif
 
 TYPED_TEST(TestStringKernels, Strptime) {
-  std::string input1 = R"(["5/1/2020", null, "12/11/1900"])";
-  std::string output1 = R"(["2020-05-01", null, "1900-12-11"])";
-  StrptimeOptions options("%m/%d/%Y", TimeUnit::MICRO);
-  this->CheckUnary("strptime", input1, timestamp(TimeUnit::MICRO), output1, &options);
+  std::string input1 = R"(["5/1/2020", null, null, "12/13/1900", null])";
+  std::string input2 = R"(["5-1-2020", "12/13/1900"])";
+  std::string input3 = R"(["5/1/2020", "AA/BB/CCCC"])";
+  std::string input4 = R"(["5/1/2020", "AA/BB/CCCC", "AA/BB/CCCC", "AA/BB/CCCC", null])";
+  std::string input5 = R"(["5/1/2020 %z", null, null, "12/13/1900 %z", null])";
+  std::string output1 = R"(["2020-05-01", null, null, "1900-12-13", null])";
+  std::string output2 = R"([null, "1900-12-13"])";
+  std::string output3 = R"(["2020-05-01", null])";
+  std::string output4 = R"(["2020-01-05", null, null, null, null])";
 
-  input1 = R"(["5/1/2020 %z", null, "12/11/1900 %z"])";
+  StrptimeOptions options("%m/%d/%Y", TimeUnit::MICRO, /*error_is_null=*/true);
+  auto unit = timestamp(TimeUnit::MICRO);
+  this->CheckUnary("strptime", input1, unit, output1, &options);
+  this->CheckUnary("strptime", input2, unit, output2, &options);
+  this->CheckUnary("strptime", input3, unit, output3, &options);
+
+  options.format = "%d/%m/%Y";
+  this->CheckUnary("strptime", input4, unit, output4, &options);
+
   options.format = "%m/%d/%Y %%z";
-  this->CheckUnary("strptime", input1, timestamp(TimeUnit::MICRO), output1, &options);
+  this->CheckUnary("strptime", input5, unit, output1, &options);
+
+  options.error_is_null = false;
+  this->CheckUnary("strptime", input5, unit, output1, &options);
+
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      Invalid, testing::HasSubstr("Invalid: Failed to parse string: '5/1/2020'"),
+      Strptime(ArrayFromJSON(this->type(), input1), options));
 }
 
 TYPED_TEST(TestStringKernels, StrptimeZoneOffset) {
@@ -1773,7 +1896,7 @@ TYPED_TEST(TestStringKernels, StrptimeZoneOffset) {
   std::string input1 = R"(["5/1/2020 +0100", null, "12/11/1900 -0130"])";
   std::string output1 =
       R"(["2020-04-30T23:00:00.000000", null, "1900-12-11T01:30:00.000000"])";
-  StrptimeOptions options("%m/%d/%Y %z", TimeUnit::MICRO);
+  StrptimeOptions options("%m/%d/%Y %z", TimeUnit::MICRO, /*error_is_null=*/true);
   this->CheckUnary("strptime", input1, timestamp(TimeUnit::MICRO, "UTC"), output1,
                    &options);
 }
@@ -1938,7 +2061,8 @@ TYPED_TEST(TestStringKernels, SliceCodeunitsBasic) {
   auto input = ArrayFromJSON(this->type(), R"(["𝑓öõḍš"])");
   EXPECT_RAISES_WITH_MESSAGE_THAT(
       Invalid,
-      testing::HasSubstr("Attempted to initialize KernelState from null FunctionOptions"),
+      testing::HasSubstr(
+          "Function 'utf8_slice_codeunits' cannot be called without options"),
       CallFunction("utf8_slice_codeunits", {input}));
 
   SliceOptions options_invalid{2, 4, 0};
@@ -2010,6 +2134,138 @@ TYPED_TEST(TestStringKernels, SliceCodeunitsNegPos) {
 }
 
 #endif  // ARROW_WITH_UTF8PROC
+
+TYPED_TEST(TestBinaryKernels, SliceBytesBasic) {
+  SliceOptions options{2, 4};
+  this->CheckUnary("binary_slice", "[\"fo\xc2\xa2\", \"fo\", null, \"fob \"]",
+                   this->type(), "[\"\xc2\xa2\", \"\", null, \"b \"]", &options);
+
+  // end is beyond 0, but before start (hence empty)
+  SliceOptions options_edgecase_1{-3, 1};
+  this->CheckUnary("binary_slice",
+                   "[\"f\xc2\xa2"
+                   "ds\"]",
+                   this->type(), R"([""])", &options_edgecase_1);
+
+  // this is a safeguard agains an optimization path possible, but actually a tricky case
+  SliceOptions options_edgecase_2{-6, -2};
+  this->CheckUnary("binary_slice",
+                   "[\"f\xc2\xa2"
+                   "ds\"]",
+                   this->type(), "[\"f\xc2\xa2\"]", &options_edgecase_2);
+
+  auto input = ArrayFromJSON(this->type(), R"(["foods"])");
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      Invalid,
+      testing::HasSubstr("Function 'binary_slice' cannot be called without options"),
+      CallFunction("binary_slice", {input}));
+
+  SliceOptions options_invalid{2, 4, 0};
+  EXPECT_RAISES_WITH_MESSAGE_THAT(
+      Invalid, testing::HasSubstr("Slice step cannot be zero"),
+      CallFunction("binary_slice", {input}, &options_invalid));
+}
+
+TYPED_TEST(TestBinaryKernels, SliceBytesPosPos) {
+  SliceOptions options{2, 4};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"a\xc2\xa2\", \"ab\xc2\xa2\", \"ab\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"\", \"\xa2\", \"\xc2\xa2\", \"\xc2\xff\"]", &options);
+  SliceOptions options_step{1, 5, 2};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"a\xc2\xa2\", \"ab\xc2\xa2\", \"ab\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"b\", \"\xc2\", \"b\xa2\", \"b\xff\"]", &options_step);
+  SliceOptions options_step_neg{5, 1, -2};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"a\xc2\xa2\", \"ab\xc2\xa2\", \"ab\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"\", \"\xa2\", \"\xa2\", \"Z\xc2\"]",
+      &options_step_neg);
+  options_step_neg.stop = 0;
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"a\xc2\xa2\", \"aZ\xc2\xa2\", \"ab\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"b\", \"\xa2\", \"\xa2Z\", \"Z\xc2\"]",
+      &options_step_neg);
+}
+
+TYPED_TEST(TestBinaryKernels, SliceBytesPosNeg) {
+  SliceOptions options{2, -1};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"a\xc2\xa2\", \"aZ\xc2\xa2\", \"ab\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"\", \"\", \"\xc2\", \"\xc2\xff\"]", &options);
+  SliceOptions options_step{1, -1, 2};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"a\xc2\xa2\", \"aZ\xc2\xa2\", \"ab\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"\", \"\xc2\", \"Z\", \"b\xff\"]", &options_step);
+  SliceOptions options_step_neg{3, -4, -2};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"ab\xc2\xffZ\"]",
+      this->type(), "[\"\", \"a\", \"b\", \"\xa2Z\", \"\xa2Z\", \"\xff\"]",
+      &options_step_neg);
+  options_step_neg.stop = -5;
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"aP\xc2\xffZ\"]",
+      this->type(), "[\"\", \"a\", \"b\", \"\xa2Z\", \"\xa2Z\", \"\xffP\"]",
+      &options_step_neg);
+}
+
+TYPED_TEST(TestBinaryKernels, SliceBytesNegNeg) {
+  SliceOptions options{-2, -1};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"ab\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"a\", \"\xc2\", \"\xc2\", \"\xff\"]", &options);
+  SliceOptions options_step{-4, -1, 2};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"aP\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"a\", \"Z\", \"a\xc2\", \"P\xff\"]", &options_step);
+  SliceOptions options_step_neg{-1, -3, -2};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"aP\xc2\xffZ\"]",
+      this->type(), "[\"\", \"a\", \"b\", \"\xa2\", \"\xa2\", \"Z\"]", &options_step_neg);
+  options_step_neg.stop = -4;
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"aP\xc2\xffZ\"]",
+      this->type(), "[\"\", \"a\", \"b\", \"\xa2Z\", \"\xa2Z\", \"Z\xc2\"]",
+      &options_step_neg);
+}
+
+TYPED_TEST(TestBinaryKernels, SliceBytesNegPos) {
+  SliceOptions options{-2, 4};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"aP\xc2\xffZ\"]",
+      this->type(), "[\"\", \"a\", \"ab\", \"\xc2\xa2\", \"\xc2\xa2\", \"\xff\"]",
+      &options);
+  SliceOptions options_step{-4, 4, 2};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"aP\xc2\xffZ\"]",
+      this->type(), "[\"\", \"a\", \"a\", \"Z\xa2\", \"a\xc2\", \"P\xff\"]",
+      &options_step);
+  SliceOptions options_step_neg{-1, 1, -2};
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"aP\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"\", \"\xa2\", \"\xa2\", \"Z\xc2\"]",
+      &options_step_neg);
+  options_step_neg.stop = 0;
+  this->CheckUnary(
+      "binary_slice",
+      "[\"\", \"a\", \"ab\", \"Z\xc2\xa2\", \"aZ\xc2\xa2\", \"aP\xc2\xffZ\"]",
+      this->type(), "[\"\", \"\", \"b\", \"\xa2\", \"\xa2Z\", \"Z\xc2\"]",
+      &options_step_neg);
+}
 
 TYPED_TEST(TestStringKernels, PadAscii) {
   PadOptions options{/*width=*/5, " "};

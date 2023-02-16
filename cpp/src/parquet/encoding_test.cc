@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "arrow/array.h"
+#include "arrow/array/builder_binary.h"
 #include "arrow/array/builder_dict.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/random.h"
@@ -34,6 +35,7 @@
 #include "arrow/util/bitmap_writer.h"
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/endian.h"
+#include "arrow/util/string.h"
 
 #include "parquet/encoding.h"
 #include "parquet/platform.h"
@@ -45,16 +47,47 @@ using arrow::default_memory_pool;
 using arrow::MemoryPool;
 using arrow::internal::checked_cast;
 
-namespace BitUtil = arrow::BitUtil;
+namespace bit_util = arrow::bit_util;
 
 namespace parquet {
 
 namespace test {
 
-TEST(VectorBooleanTest, TestEncodeDecode) {
+TEST(VectorBooleanTest, TestEncodeBoolDecode) {
+  // PARQUET-454
+  const int nvalues = 10000;
+  bool decode_buffer[nvalues] = {false};
+
+  int nbytes = static_cast<int>(bit_util::BytesForBits(nvalues));
+
+  std::vector<bool> draws;
+  ::arrow::random_is_valid(nvalues, 0.5 /* null prob */, &draws, 0 /* seed */);
+
+  std::unique_ptr<BooleanEncoder> encoder =
+      MakeTypedEncoder<BooleanType>(Encoding::PLAIN);
+  encoder->Put(draws, nvalues);
+
+  std::unique_ptr<BooleanDecoder> decoder =
+      MakeTypedDecoder<BooleanType>(Encoding::PLAIN);
+
+  std::shared_ptr<Buffer> encode_buffer = encoder->FlushValues();
+  ASSERT_EQ(nbytes, encode_buffer->size());
+
+  decoder->SetData(nvalues, encode_buffer->data(),
+                   static_cast<int>(encode_buffer->size()));
+  int values_decoded = decoder->Decode(&decode_buffer[0], nvalues);
+  ASSERT_EQ(nvalues, values_decoded);
+
+  for (int i = 0; i < nvalues; ++i) {
+    ASSERT_EQ(draws[i], decode_buffer[i]);
+  }
+}
+
+TEST(VectorBooleanTest, TestEncodeIntDecode) {
   // PARQUET-454
   int nvalues = 10000;
-  int nbytes = static_cast<int>(BitUtil::BytesForBits(nvalues));
+
+  int nbytes = static_cast<int>(bit_util::BytesForBits(nvalues));
 
   std::vector<bool> draws;
   ::arrow::random_is_valid(nvalues, 0.5 /* null prob */, &draws, 0 /* seed */);
@@ -78,7 +111,7 @@ TEST(VectorBooleanTest, TestEncodeDecode) {
   ASSERT_EQ(nvalues, values_decoded);
 
   for (int i = 0; i < nvalues; ++i) {
-    ASSERT_EQ(draws[i], ::arrow::BitUtil::GetBit(decode_data, i)) << i;
+    ASSERT_EQ(draws[i], ::arrow::bit_util::GetBit(decode_data, i)) << i;
   }
 }
 
@@ -90,6 +123,12 @@ void GenerateData(int num_values, T* out, std::vector<uint8_t>* heap) {
   // seed the prng so failure is deterministic
   random_numbers(num_values, 0, std::numeric_limits<T>::min(),
                  std::numeric_limits<T>::max(), out);
+}
+
+template <typename T>
+void GenerateBoundData(int num_values, T* out, T min, T max, std::vector<uint8_t>* heap) {
+  // seed the prng so failure is deterministic
+  random_numbers(num_values, 0, min, max, out);
 }
 
 template <>
@@ -133,7 +172,7 @@ template <typename T>
 void VerifyResultsSpaced(T* result, T* expected, int num_values,
                          const uint8_t* valid_bits, int64_t valid_bits_offset) {
   for (auto i = 0; i < num_values; ++i) {
-    if (BitUtil::GetBit(valid_bits, valid_bits_offset + i)) {
+    if (bit_util::GetBit(valid_bits, valid_bits_offset + i)) {
       ASSERT_EQ(expected[i], result[i]) << i;
     }
   }
@@ -150,7 +189,7 @@ template <>
 void VerifyResultsSpaced<FLBA>(FLBA* result, FLBA* expected, int num_values,
                                const uint8_t* valid_bits, int64_t valid_bits_offset) {
   for (auto i = 0; i < num_values; ++i) {
-    if (BitUtil::GetBit(valid_bits, valid_bits_offset + i)) {
+    if (bit_util::GetBit(valid_bits, valid_bits_offset + i)) {
       ASSERT_EQ(0, memcmp(expected[i].ptr, result[i].ptr, flba_length)) << i;
     }
   }
@@ -280,7 +319,7 @@ class TestPlainEncoding : public TestEncodingBase<Type> {
     auto decoder = MakeTypedDecoder<Type>(Encoding::PLAIN, descr_.get());
     int null_count = 0;
     for (auto i = 0; i < num_values_; i++) {
-      if (!BitUtil::GetBit(valid_bits, valid_bits_offset + i)) {
+      if (!bit_util::GetBit(valid_bits, valid_bits_offset + i)) {
         null_count++;
       }
     }
@@ -305,7 +344,7 @@ TYPED_TEST_SUITE(TestPlainEncoding, ParquetTypes);
 TYPED_TEST(TestPlainEncoding, BasicRoundTrip) {
   ASSERT_NO_FATAL_FAILURE(this->Execute(10000, 1));
 
-  // Spaced test with different sizes and offest to guarantee SIMD implementation
+  // Spaced test with different sizes and offset to guarantee SIMD implementation
   constexpr int kAvx512Size = 64;         // sizeof(__m512i) for Avx512
   constexpr int kSimdSize = kAvx512Size;  // Current the max is Avx512
   constexpr int kMultiSimdSize = kSimdSize * 33;
@@ -338,7 +377,8 @@ class TestDictionaryEncoding : public TestEncodingBase<Type> {
   static constexpr int TYPE = Type::type_num;
 
   void CheckRoundtrip() {
-    std::vector<uint8_t> valid_bits(::arrow::BitUtil::BytesForBits(num_values_) + 1, 255);
+    std::vector<uint8_t> valid_bits(::arrow::bit_util::BytesForBits(num_values_) + 1,
+                                    255);
 
     auto base_encoder = MakeEncoder(Type::type_num, Encoding::PLAIN, true, descr_.get());
     auto encoder =
@@ -446,7 +486,7 @@ class TestArrowBuilderDecoding : public ::testing::Test {
   }
 
   std::unique_ptr<DictBuilder> CreateDictBuilder() {
-    return std::unique_ptr<DictBuilder>(new DictBuilder(default_memory_pool()));
+    return std::make_unique<DictBuilder>(default_memory_pool());
   }
 
   // Setup encoder/decoder pair for testing with
@@ -929,7 +969,7 @@ class DictEncoding : public TestArrowBuilderDecoding {
  public:
   void SetupEncoderDecoder() override {
     auto node = schema::ByteArray("name");
-    descr_ = std::unique_ptr<ColumnDescriptor>(new ColumnDescriptor(node, 0, 0));
+    descr_ = std::make_unique<ColumnDescriptor>(node, 0, 0);
     encoder_ = MakeTypedEncoder<ByteArrayType>(Encoding::PLAIN, /*use_dictionary=*/true,
                                                descr_.get());
     if (null_count_ == 0) {
@@ -1058,7 +1098,7 @@ class TestByteStreamSplitEncoding : public TestEncodingBase<Type> {
     }
 
     {
-      std::vector<uint8_t> valid_bits(::arrow::BitUtil::BytesForBits(num_values_), 0);
+      std::vector<uint8_t> valid_bits(::arrow::bit_util::BytesForBits(num_values_), 0);
       std::vector<c_type> expected_filtered_output;
       const int every_nth = 5;
       expected_filtered_output.reserve((num_values_ + every_nth - 1) / every_nth);
@@ -1124,7 +1164,7 @@ template <typename c_type>
 static std::vector<c_type> ToLittleEndian(const std::vector<c_type>& input) {
   std::vector<c_type> data(input.size());
   std::transform(input.begin(), input.end(), data.begin(), [](const c_type& value) {
-    return ::arrow::BitUtil::ToLittleEndian(value);
+    return ::arrow::bit_util::ToLittleEndian(value);
   });
   return data;
 }
@@ -1241,6 +1281,216 @@ TEST(ByteStreamSplitEncodeDecode, InvalidDataTypes) {
   ASSERT_THROW(MakeTypedDecoder<ByteArrayType>(Encoding::BYTE_STREAM_SPLIT),
                ParquetException);
   ASSERT_THROW(MakeTypedDecoder<FLBAType>(Encoding::BYTE_STREAM_SPLIT), ParquetException);
+}
+
+// ----------------------------------------------------------------------
+// DELTA_BINARY_PACKED encode/decode tests.
+
+template <typename Type>
+class TestDeltaBitPackEncoding : public TestEncodingBase<Type> {
+ public:
+  using c_type = typename Type::c_type;
+  static constexpr int TYPE = Type::type_num;
+  static constexpr size_t kNumRoundTrips = 3;
+  const std::vector<int> kReadBatchSizes = {1, 11};
+
+  void InitBoundData(int nvalues, int repeats, c_type half_range) {
+    num_values_ = nvalues * repeats;
+    input_bytes_.resize(num_values_ * sizeof(c_type));
+    output_bytes_.resize(num_values_ * sizeof(c_type));
+    draws_ = reinterpret_cast<c_type*>(input_bytes_.data());
+    decode_buf_ = reinterpret_cast<c_type*>(output_bytes_.data());
+    GenerateBoundData<c_type>(nvalues, draws_, -half_range, half_range, &data_buffer_);
+
+    // add some repeated values
+    for (int j = 1; j < repeats; ++j) {
+      for (int i = 0; i < nvalues; ++i) {
+        draws_[nvalues * j + i] = draws_[i];
+      }
+    }
+  }
+
+  void ExecuteBound(int nvalues, int repeats, c_type half_range) {
+    InitBoundData(nvalues, repeats, half_range);
+    CheckRoundtrip();
+  }
+
+  void ExecuteSpacedBound(int nvalues, int repeats, int64_t valid_bits_offset,
+                          double null_probability, c_type half_range) {
+    InitBoundData(nvalues, repeats, half_range);
+
+    int64_t size = num_values_ + valid_bits_offset;
+    auto rand = ::arrow::random::RandomArrayGenerator(1923);
+    const auto array = rand.UInt8(size, 0, 100, null_probability);
+    const auto valid_bits = array->null_bitmap_data();
+    CheckRoundtripSpaced(valid_bits, valid_bits_offset);
+  }
+
+  void CheckDecoding() {
+    auto decoder = MakeTypedDecoder<Type>(Encoding::DELTA_BINARY_PACKED, descr_.get());
+    auto read_batch_sizes = kReadBatchSizes;
+    read_batch_sizes.push_back(num_values_);
+    // Exercise different batch sizes
+    for (const int read_batch_size : read_batch_sizes) {
+      decoder->SetData(num_values_, encode_buffer_->data(),
+                       static_cast<int>(encode_buffer_->size()));
+
+      int values_decoded = 0;
+      while (values_decoded < num_values_) {
+        values_decoded += decoder->Decode(decode_buf_ + values_decoded, read_batch_size);
+      }
+      ASSERT_EQ(num_values_, values_decoded);
+      ASSERT_NO_FATAL_FAILURE(VerifyResults<c_type>(decode_buf_, draws_, num_values_));
+    }
+  }
+
+  void CheckRoundtrip() override {
+    auto encoder =
+        MakeTypedEncoder<Type>(Encoding::DELTA_BINARY_PACKED, false, descr_.get());
+    // Encode a number of times to exercise the flush logic
+    for (size_t i = 0; i < kNumRoundTrips; ++i) {
+      encoder->Put(draws_, num_values_);
+      encode_buffer_ = encoder->FlushValues();
+      CheckDecoding();
+    }
+  }
+
+  void CheckRoundtripSpaced(const uint8_t* valid_bits,
+                            int64_t valid_bits_offset) override {
+    auto encoder =
+        MakeTypedEncoder<Type>(Encoding::DELTA_BINARY_PACKED, false, descr_.get());
+    auto decoder = MakeTypedDecoder<Type>(Encoding::DELTA_BINARY_PACKED, descr_.get());
+    int null_count = 0;
+    for (auto i = 0; i < num_values_; i++) {
+      if (!bit_util::GetBit(valid_bits, valid_bits_offset + i)) {
+        null_count++;
+      }
+    }
+
+    for (size_t i = 0; i < kNumRoundTrips; ++i) {
+      encoder->PutSpaced(draws_, num_values_, valid_bits, valid_bits_offset);
+      encode_buffer_ = encoder->FlushValues();
+      decoder->SetData(num_values_ - null_count, encode_buffer_->data(),
+                       static_cast<int>(encode_buffer_->size()));
+      auto values_decoded = decoder->DecodeSpaced(decode_buf_, num_values_, null_count,
+                                                  valid_bits, valid_bits_offset);
+      ASSERT_EQ(num_values_, values_decoded);
+      ASSERT_NO_FATAL_FAILURE(VerifyResultsSpaced<c_type>(
+          decode_buf_, draws_, num_values_, valid_bits, valid_bits_offset));
+    }
+  }
+
+ protected:
+  USING_BASE_MEMBERS();
+  std::vector<uint8_t> input_bytes_;
+  std::vector<uint8_t> output_bytes_;
+};
+
+using TestDeltaBitPackEncodingTypes = ::testing::Types<Int32Type, Int64Type>;
+TYPED_TEST_SUITE(TestDeltaBitPackEncoding, TestDeltaBitPackEncodingTypes);
+
+TYPED_TEST(TestDeltaBitPackEncoding, BasicRoundTrip) {
+  using T = typename TypeParam::c_type;
+  int values_per_block = 128;
+  int values_per_mini_block = 32;
+
+  // Size a multiple of miniblock size
+  ASSERT_NO_FATAL_FAILURE(this->Execute(values_per_mini_block * 10, 10));
+  // Size a multiple of block size
+  ASSERT_NO_FATAL_FAILURE(this->Execute(values_per_block * 10, 10));
+  // Size multiple of neither miniblock nor block size
+  ASSERT_NO_FATAL_FAILURE(
+      this->Execute((values_per_mini_block * values_per_block) + 1, 10));
+  ASSERT_NO_FATAL_FAILURE(this->Execute(0, 0));
+  ASSERT_NO_FATAL_FAILURE(this->Execute(65, 1));
+  ASSERT_NO_FATAL_FAILURE(this->ExecuteSpaced(
+      /*nvalues*/ 1234, /*repeats*/ 1, /*valid_bits_offset*/ 64,
+      /*null_probability*/ 0.1));
+
+  // All identical values
+  ASSERT_NO_FATAL_FAILURE(
+      this->ExecuteBound(/*nvalues*/ 2000, /*repeats*/ 50, /*half_range*/ 0));
+  ASSERT_NO_FATAL_FAILURE(this->ExecuteSpacedBound(
+      /*nvalues*/ 1234, /*repeats*/ 1, /*valid_bits_offset*/ 64,
+      /*null_probability*/ 0.1,
+      /*half_range*/ 0));
+
+  // Various delta bitwidths, including the full datatype width
+  const int max_bitwidth = sizeof(T) * 8;
+  std::vector<int> bitwidths = {
+      1, 2, 3, 5, 8, 11, 16, max_bitwidth - 8, max_bitwidth - 1, max_bitwidth};
+  for (int bitwidth : bitwidths) {
+    T half_range =
+        std::numeric_limits<T>::max() >> static_cast<uint32_t>(max_bitwidth - bitwidth);
+
+    ASSERT_NO_FATAL_FAILURE(
+        this->ExecuteBound(/*nvalues*/ 2000, /*repeats*/ 50, half_range));
+    ASSERT_NO_FATAL_FAILURE(this->ExecuteSpacedBound(
+        /*nvalues*/ 1234, /*repeats*/ 1, /*valid_bits_offset*/ 64,
+        /*null_probability*/ 0.1,
+        /*half_range*/ half_range));
+  }
+}
+
+TYPED_TEST(TestDeltaBitPackEncoding, NonZeroPaddedMiniblockBitWidth) {
+  // GH-14923: depending on the number of encoded values, some of the miniblock
+  // bitwidths are actually padding bytes that may take non-conformant values
+  // according to the Parquet spec.
+
+  // Same values as in DeltaBitPackEncoder
+  constexpr int kValuesPerBlock = 128;
+  constexpr int kMiniBlocksPerBlock = 4;
+  constexpr int kValuesPerMiniBlock = kValuesPerBlock / kMiniBlocksPerBlock;
+
+  // num_values must be kept small enough for kHeaderLength below
+  for (const int num_values : {2, 62, 63, 64, 65, 95, 96, 97, 127}) {
+    ARROW_SCOPED_TRACE("num_values = ", num_values);
+
+    // Generate input data with a small half_range to make the header length
+    // deterministic (see kHeaderLength).
+    this->InitBoundData(num_values, /*repeats=*/1, /*half_range=*/31);
+    ASSERT_EQ(this->num_values_, num_values);
+
+    auto encoder = MakeTypedEncoder<TypeParam>(Encoding::DELTA_BINARY_PACKED, false,
+                                               this->descr_.get());
+    encoder->Put(this->draws_, this->num_values_);
+    auto encoded = encoder->FlushValues();
+    const auto encoded_size = encoded->size();
+
+    // Make mutable copy of encoded buffer
+    this->encode_buffer_ = AllocateBuffer(default_memory_pool(), encoded_size);
+    uint8_t* data = this->encode_buffer_->mutable_data();
+    memcpy(data, encoded->data(), encoded_size);
+
+    // The number of padding bytes at the end of the miniblock bitwidths array.
+    // We subtract 1 from num_values because the first data value is encoded
+    // in the header, thus does not participate in miniblock encoding.
+    const int num_padding_bytes =
+        (kValuesPerBlock - num_values + 1) / kValuesPerMiniBlock;
+    ARROW_SCOPED_TRACE("num_padding_bytes = ", num_padding_bytes);
+
+    // The header length is:
+    // - 2 bytes for ULEB128-encoded block size (== kValuesPerBlock)
+    // - 1 byte for ULEB128-encoded miniblocks per block (== kMiniBlocksPerBlock)
+    // - 1 byte for ULEB128-encoded num_values
+    // - 1 byte for ULEB128-encoded first value
+    // (this assumes that num_values and the first value are narrow enough)
+    constexpr int kHeaderLength = 5;
+    // After the header, there is a zigzag ULEB128-encoded min delta for the first block,
+    // then the miniblock bitwidths for the first block.
+    // Given a narrow enough range, the zigzag ULEB128-encoded min delta is 1 byte long.
+    uint8_t* mini_block_bitwidths = data + kHeaderLength + 1;
+
+    // Garble padding bytes; decoding should succeed.
+    for (int i = 0; i < num_padding_bytes; ++i) {
+      mini_block_bitwidths[kMiniBlocksPerBlock - i - 1] = 0xFFU;
+    }
+    ASSERT_NO_THROW(this->CheckDecoding());
+
+    // Not a padding byte but an actual miniblock bitwidth; decoding should error out.
+    mini_block_bitwidths[kMiniBlocksPerBlock - num_padding_bytes - 1] = 0xFFU;
+    EXPECT_THROW(this->CheckDecoding(), ParquetException);
+  }
 }
 
 }  // namespace test

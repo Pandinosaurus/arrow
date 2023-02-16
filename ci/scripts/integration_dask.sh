@@ -28,13 +28,12 @@ python -c "import pyarrow.parquet"
 python -c "import dask.dataframe"
 
 # TODO(kszucs): the following tests are also uses pyarrow
-# pytest -sv --pyargs dask.bytes.tests.test_s3
 # pytest -sv --pyargs dask.bytes.tests.test_hdfs
 # pytest -sv --pyargs dask.bytes.tests.test_local
 
-# skip failing pickle test, see https://github.com/dask/dask/issues/6374
-pytest -v --pyargs dask.dataframe.tests.test_dataframe -k "not test_dataframe_picklable and not test_describe_empty"
+pytest -v --pyargs dask.dataframe.tests.test_dataframe
 pytest -v --pyargs dask.dataframe.io.tests.test_orc
-# skip failing parquet tests, see https://github.com/dask/dask/issues/6243
-pytest -v --pyargs dask.dataframe.io.tests.test_parquet \
-  -k "not test_to_parquet_pyarrow_w_inconsistent_schema_by_partition_fails_by_default and not test_timeseries_nulls_in_schema"
+# skip test until new fsspec release is out (https://github.com/fsspec/filesystem_spec/pull/1139)
+pytest -v --pyargs dask.dataframe.io.tests.test_parquet -k "not test_pyarrow_filesystem_option"
+# this file contains parquet tests that use S3 filesystem
+pytest -v --pyargs dask.bytes.tests.test_s3

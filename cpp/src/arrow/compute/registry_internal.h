@@ -31,8 +31,11 @@ void RegisterScalarCast(FunctionRegistry* registry);
 void RegisterScalarComparison(FunctionRegistry* registry);
 void RegisterScalarIfElse(FunctionRegistry* registry);
 void RegisterScalarNested(FunctionRegistry* registry);
+void RegisterScalarRandom(FunctionRegistry* registry);  // Nullary
+void RegisterScalarRoundArithmetic(FunctionRegistry* registry);
 void RegisterScalarSetLookup(FunctionRegistry* registry);
 void RegisterScalarStringAscii(FunctionRegistry* registry);
+void RegisterScalarStringUtf8(FunctionRegistry* registry);
 void RegisterScalarTemporalBinary(FunctionRegistry* registry);
 void RegisterScalarTemporalUnary(FunctionRegistry* registry);
 void RegisterScalarValidity(FunctionRegistry* registry);
@@ -41,9 +44,12 @@ void RegisterScalarOptions(FunctionRegistry* registry);
 
 // Vector functions
 void RegisterVectorArraySort(FunctionRegistry* registry);
+void RegisterVectorCumulativeSum(FunctionRegistry* registry);
 void RegisterVectorHash(FunctionRegistry* registry);
 void RegisterVectorNested(FunctionRegistry* registry);
+void RegisterVectorRank(FunctionRegistry* registry);
 void RegisterVectorReplace(FunctionRegistry* registry);
+void RegisterVectorSelectK(FunctionRegistry* registry);
 void RegisterVectorSelection(FunctionRegistry* registry);
 void RegisterVectorSort(FunctionRegistry* registry);
 

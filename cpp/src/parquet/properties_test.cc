@@ -36,6 +36,7 @@ TEST(TestReaderProperties, Basics) {
 
   ASSERT_EQ(props.buffer_size(), kDefaultBufferSize);
   ASSERT_FALSE(props.is_buffered_stream_enabled());
+  ASSERT_FALSE(props.page_checksum_verification());
 }
 
 TEST(TestWriterProperties, Basics) {
@@ -43,8 +44,9 @@ TEST(TestWriterProperties, Basics) {
 
   ASSERT_EQ(kDefaultDataPageSize, props->data_pagesize());
   ASSERT_EQ(DEFAULT_DICTIONARY_PAGE_SIZE_LIMIT, props->dictionary_pagesize_limit());
-  ASSERT_EQ(ParquetVersion::PARQUET_1_0, props->version());
+  ASSERT_EQ(ParquetVersion::PARQUET_2_4, props->version());
   ASSERT_EQ(ParquetDataPageVersion::V1, props->data_page_version());
+  ASSERT_FALSE(props->page_checksum_enabled());
 }
 
 TEST(TestWriterProperties, AdvancedHandling) {

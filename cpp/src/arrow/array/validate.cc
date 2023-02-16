@@ -27,10 +27,12 @@
 #include "arrow/util/bit_util.h"
 #include "arrow/util/bitmap_ops.h"
 #include "arrow/util/checked_cast.h"
-#include "arrow/util/int_util_internal.h"
+#include "arrow/util/decimal.h"
+#include "arrow/util/int_util_overflow.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/utf8.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_data_inline.h"
+#include "arrow/visit_type_inline.h"
 
 namespace arrow {
 namespace internal {
@@ -50,9 +52,9 @@ struct UTF8DataValidator {
     util::InitializeUTF8();
 
     int64_t i = 0;
-    return VisitArrayDataInline<StringType>(
+    return VisitArraySpanInline<StringType>(
         data,
-        [&](util::string_view v) {
+        [&](std::string_view v) {
           if (ARROW_PREDICT_FALSE(!util::ValidateUTF8(v))) {
             return Status::Invalid("Invalid UTF8 sequence at string index ", i);
           }
@@ -81,7 +83,7 @@ struct BoundsChecker {
     using c_type = typename IntegerType::c_type;
 
     int64_t i = 0;
-    return VisitArrayDataInline<IntegerType>(
+    return VisitArraySpanInline<IntegerType>(
         data,
         [&](c_type value) {
           const auto v = static_cast<int64_t>(value);
@@ -162,6 +164,81 @@ struct ValidateArrayImpl {
     RETURN_NOT_OK(ValidateBinaryLike(type));
     if (full_validation) {
       RETURN_NOT_OK(ValidateUTF8(data));
+    }
+    return Status::OK();
+  }
+
+  Status Visit(const Date64Type& type) {
+    RETURN_NOT_OK(ValidateFixedWidthBuffers());
+
+    if (full_validation) {
+      using c_type = typename Date64Type::c_type;
+      return VisitArraySpanInline<Date64Type>(
+          data,
+          [&](c_type date) {
+            constexpr c_type kFullDayMillis = 1000 * 60 * 60 * 24;
+            if (date % kFullDayMillis != 0) {
+              return Status::Invalid(type, " ", date,
+                                     " does not represent a whole number of days");
+            }
+            return Status::OK();
+          },
+          []() { return Status::OK(); });
+    }
+    return Status::OK();
+  }
+
+  Status Visit(const Time32Type& type) {
+    RETURN_NOT_OK(ValidateFixedWidthBuffers());
+
+    if (full_validation) {
+      using c_type = typename Time32Type::c_type;
+      return VisitArraySpanInline<Time32Type>(
+          data,
+          [&](c_type time) {
+            constexpr c_type kFullDaySeconds = 60 * 60 * 24;
+            constexpr c_type kFullDayMillis = kFullDaySeconds * 1000;
+            if (type.unit() == TimeUnit::SECOND &&
+                (time < 0 || time >= kFullDaySeconds)) {
+              return Status::Invalid(type, " ", time,
+                                     " is not within the acceptable range of ", "[0, ",
+                                     kFullDaySeconds, ") s");
+            }
+            if (type.unit() == TimeUnit::MILLI && (time < 0 || time >= kFullDayMillis)) {
+              return Status::Invalid(type, " ", time,
+                                     " is not within the acceptable range of ", "[0, ",
+                                     kFullDayMillis, ") ms");
+            }
+            return Status::OK();
+          },
+          []() { return Status::OK(); });
+    }
+    return Status::OK();
+  }
+
+  Status Visit(const Time64Type& type) {
+    RETURN_NOT_OK(ValidateFixedWidthBuffers());
+
+    if (full_validation) {
+      using c_type = typename Time64Type::c_type;
+      return VisitArraySpanInline<Time64Type>(
+          data,
+          [&](c_type time) {
+            constexpr c_type kFullDayMicro = 1000000LL * 60 * 60 * 24;
+            constexpr c_type kFullDayNano = kFullDayMicro * 1000;
+            if (type.unit() == TimeUnit::MICRO && (time < 0 || time >= kFullDayMicro)) {
+              return Status::Invalid(type, " ", time,
+                                     " is not within the acceptable range of ", "[0, ",
+                                     kFullDayMicro, ") us");
+            }
+            if (type.unit() == TimeUnit::NANO && (time < 0 || time >= kFullDayNano)) {
+              return Status::Invalid(type, " ", time,
+                                     " is not within the acceptable range of ", "[0, ",
+                                     kFullDayNano, ") ns");
+            }
+            return Status::OK();
+          },
+          []() { return Status::OK(); });
     }
     return Status::OK();
   }
@@ -382,14 +459,17 @@ struct ValidateArrayImpl {
       if (buffer == nullptr) {
         continue;
       }
-      int64_t min_buffer_size = -1;
+      int64_t min_buffer_size = 0;
       switch (spec.kind) {
         case DataTypeLayout::BITMAP:
-          min_buffer_size = BitUtil::BytesForBits(length_plus_offset);
+          // If length == 0, buffer size can be 0 regardless of offset
+          if (data.length > 0) {
+            min_buffer_size = bit_util::BytesForBits(length_plus_offset);
+          }
           break;
         case DataTypeLayout::FIXED_WIDTH:
-          if (MultiplyWithOverflow(length_plus_offset, spec.byte_width,
-                                   &min_buffer_size)) {
+          if (data.length > 0 && MultiplyWithOverflow(length_plus_offset, spec.byte_width,
+                                                      &min_buffer_size)) {
             return Status::Invalid("Array of type ", type.ToString(),
                                    " has impossibly large length and offset");
           }
@@ -419,7 +499,8 @@ struct ValidateArrayImpl {
   }
 
   Status ValidateNulls(const DataType& type) {
-    if (type.id() != Type::NA && data.null_count > 0 && data.buffers[0] == nullptr) {
+    if (type.storage_id() != Type::NA && data.null_count > 0 &&
+        data.buffers[0] == nullptr) {
       return Status::Invalid("Array of type ", type.ToString(), " has ", data.null_count,
                              " nulls but no null bitmap");
     }
@@ -437,7 +518,7 @@ struct ValidateArrayImpl {
           // Do not call GetNullCount() as it would also set the `null_count` member
           actual_null_count = data.length - CountSetBits(data.buffers[0]->data(),
                                                          data.offset, data.length);
-        } else if (data.type->id() == Type::NA) {
+        } else if (data.type->storage_id() == Type::NA) {
           actual_null_count = data.length;
         } else {
           actual_null_count = 0;
@@ -595,9 +676,9 @@ struct ValidateArrayImpl {
     using CType = typename TypeTraits<DecimalType>::CType;
     if (full_validation) {
       const int32_t precision = type.precision();
-      return VisitArrayDataInline<DecimalType>(
+      return VisitArraySpanInline<DecimalType>(
           data,
-          [&](util::string_view bytes) {
+          [&](std::string_view bytes) {
             DCHECK_EQ(bytes.size(), DecimalType::kByteWidth);
             CType value(reinterpret_cast<const uint8_t*>(bytes.data()));
             if (!value.FitsInPrecision(precision)) {

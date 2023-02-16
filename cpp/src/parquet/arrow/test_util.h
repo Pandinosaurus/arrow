@@ -129,16 +129,14 @@ template <typename ArrowType>
   return builder.Finish(out);
 }
 
+template <int32_t byte_width>
 static void random_decimals(int64_t n, uint32_t seed, int32_t precision, uint8_t* out) {
   auto gen = ::arrow::random::RandomArrayGenerator(seed);
   std::shared_ptr<Array> decimals;
-  int32_t byte_width = 0;
-  if (precision <= ::arrow::Decimal128Type::kMaxPrecision) {
+  if constexpr (byte_width == 16) {
     decimals = gen.Decimal128(::arrow::decimal128(precision, 0), n);
-    byte_width = ::arrow::Decimal128Type::kByteWidth;
   } else {
     decimals = gen.Decimal256(::arrow::decimal256(precision, 0), n);
-    byte_width = ::arrow::Decimal256Type::kByteWidth;
   }
   std::memcpy(out, decimals->data()->GetValues<uint8_t>(1, 0), byte_width * n);
 }
@@ -158,7 +156,8 @@ NonNullArray(size_t size, std::shared_ptr<Array>* out) {
   constexpr int32_t seed = 0;
 
   ARROW_ASSIGN_OR_RAISE(auto out_buf, ::arrow::AllocateBuffer(size * byte_width));
-  random_decimals(size, seed, kDecimalPrecision, out_buf->mutable_data());
+  random_decimals<::arrow::Decimal128Type::kByteWidth>(size, seed, kDecimalPrecision,
+                                                       out_buf->mutable_data());
 
   RETURN_NOT_OK(builder.AppendValues(out_buf->data(), size));
   return builder.Finish(out);
@@ -179,7 +178,8 @@ NonNullArray(size_t size, std::shared_ptr<Array>* out) {
   constexpr int32_t seed = 0;
 
   ARROW_ASSIGN_OR_RAISE(auto out_buf, ::arrow::AllocateBuffer(size * byte_width));
-  random_decimals(size, seed, kDecimalPrecision, out_buf->mutable_data());
+  random_decimals<::arrow::Decimal256Type::kByteWidth>(size, seed, kDecimalPrecision,
+                                                       out_buf->mutable_data());
 
   RETURN_NOT_OK(builder.AppendValues(out_buf->data(), size));
   return builder.Finish(out);
@@ -341,7 +341,8 @@ NullableArray(size_t size, size_t num_nulls, uint32_t seed,
 
   ARROW_ASSIGN_OR_RAISE(auto out_buf, ::arrow::AllocateBuffer(size * byte_width));
 
-  random_decimals(size, seed, precision, out_buf->mutable_data());
+  random_decimals<::arrow::Decimal128Type::kByteWidth>(size, seed, precision,
+                                                       out_buf->mutable_data());
 
   ::arrow::Decimal128Builder builder(type);
   RETURN_NOT_OK(builder.AppendValues(out_buf->data(), size, valid_bytes.data()));
@@ -367,7 +368,8 @@ NullableArray(size_t size, size_t num_nulls, uint32_t seed,
 
   ARROW_ASSIGN_OR_RAISE(auto out_buf, ::arrow::AllocateBuffer(size * byte_width));
 
-  random_decimals(size, seed, precision, out_buf->mutable_data());
+  random_decimals<::arrow::Decimal256Type::kByteWidth>(size, seed, precision,
+                                                       out_buf->mutable_data());
 
   ::arrow::Decimal256Builder builder(type);
   RETURN_NOT_OK(builder.AppendValues(out_buf->data(), size, valid_bytes.data()));
@@ -411,7 +413,7 @@ Status MakeListArray(const std::shared_ptr<Array>& values, int64_t size,
   int32_t* offsets_ptr = reinterpret_cast<int32_t*>(offsets->mutable_data());
 
   auto null_bitmap = AllocateBuffer();
-  int64_t bitmap_size = ::arrow::BitUtil::BytesForBits(size);
+  int64_t bitmap_size = ::arrow::bit_util::BytesForBits(size);
   RETURN_NOT_OK(null_bitmap->Resize(bitmap_size));
   uint8_t* null_bitmap_ptr = null_bitmap->mutable_data();
   memset(null_bitmap_ptr, 0, bitmap_size);
@@ -421,7 +423,7 @@ Status MakeListArray(const std::shared_ptr<Array>& values, int64_t size,
     offsets_ptr[i] = current_offset;
     if (!(((i % 2) == 0) && ((i / 2) < null_count))) {
       // Non-null list (list with index 1 is always empty).
-      ::arrow::BitUtil::SetBit(null_bitmap_ptr, i);
+      ::arrow::bit_util::SetBit(null_bitmap_ptr, i);
       if (i != 1) {
         current_offset += static_cast<int32_t>(length_per_entry);
       }

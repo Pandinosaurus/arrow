@@ -52,7 +52,7 @@ Using conda-forge for build dependencies
 ========================================
 
 `Miniconda <https://conda.io/miniconda.html>`_ is a minimal Python distribution
-including the `conda <https://conda.io>`_ package manager. Some memers of the
+including the `conda <https://conda.io>`_ package manager. Some members of the
 Apache Arrow community participate in the maintenance of `conda-forge
 <https://conda-forge.org/>`_, a community-maintained cross-platform package
 repository for conda.
@@ -178,12 +178,12 @@ For newer versions of Visual Studio, specify the generator
 ``Visual Studio 16 2019`` or see ``cmake --help`` for available
 generators.
 
-Building with Ninja and clcache
+Building with Ninja and sccache
 ===============================
 
 The `Ninja <https://ninja-build.org/>`_ build system offers better build
-parallelization, and the optional `clcache
-<https://github.com/frerich/clcache/>`_ compiler cache keeps track of
+parallelization, and the optional `sccache
+<https://github.com/mozilla/sccache#local>`_ compiler cache keeps track of
 past compilations to avoid running them over and over again (in a way similar
 to the Unix-specific ``ccache``).
 
@@ -193,18 +193,15 @@ includes Ninja, run the initialization command shown
 run ``ninja --version``.
 
 If Ninja is not included in your version of Visual Studio, and you are using
-conda, activate your conda environment and install Ninja and clcache:
+conda, activate your conda environment and install Ninja:
 
 .. code-block:: shell
 
    activate arrow-dev
    conda install -c conda-forge ninja
-   pip install git+https://github.com/frerich/clcache.git
 
 If you are not using conda,
 `install Ninja from another source <https://github.com/ninja-build/ninja/wiki/Pre-built-Ninja-packages>`_
-and optionally
-`install clcache from another source <https://github.com/frerich/clcache/wiki/Installation>`_
 .
 
 After installation is complete, change working directory in ``cmd.exe`` to the root directory of Arrow and
@@ -216,25 +213,19 @@ do an out of source build by generating Ninja files:
    mkdir build
    cd build
    cmake -G "Ninja" ^
-         -DCMAKE_C_COMPILER=clcache ^
-         -DCMAKE_CXX_COMPILER=clcache ^
          -DARROW_BUILD_TESTS=ON ^
          -DGTest_SOURCE=BUNDLED ..
    cmake --build . --config Release
 
-Setting ``CMAKE_C_COMPILER`` and ``CMAKE_CXX_COMPILER`` in the command line
-of ``cmake`` is the preferred method of using ``clcache``. Alternatively, you
-can set ``CC`` and ``CXX`` environment variables before calling ``cmake``:
+To use ``sccache`` in local storage mode you need to set ``SCCACHE_DIR``
+environment variable before calling ``cmake``:
 
 .. code-block:: shell
 
    ...
-   set CC=clcache
-   set CXX=clcache
+   set SCCACHE_DIR=%LOCALAPPDATA%\Mozilla\sccache
    cmake -G "Ninja" ^
    ...
-
-
 
 Building with NMake
 ===================
@@ -362,6 +353,37 @@ suppress dllimport/dllexport marking of symbols. Projects that statically link
 against Arrow on Windows additionally need this definition. The Unix builds do
 not use the macro.
 
+In addition if using ``-DARROW_FLIGHT=ON``, ``ARROW_FLIGHT_STATIC`` needs to
+be defined, and similarly for ``-DARROW_FLIGHT_SQL=ON``.
+
+.. code-block:: cmake
+
+   project(MyExample)
+
+   find_package(Arrow REQUIRED)
+
+   add_executable(my_example my_example.cc)
+   target_link_libraries(my_example
+                         PRIVATE
+                         arrow_static
+                         arrow_flight_static
+                         arrow_flight_sql_static)
+
+   target_compile_definitions(my_example
+                              PUBLIC
+                              ARROW_STATIC
+                              ARROW_FLIGHT_STATIC
+                              ARROW_FLIGHT_SQL_STATIC)
+
+Downloading the Timezone Database
+=================================
+
+To run some of the compute unit tests on Windows, the IANA timezone database
+and the Windows timezone mapping need to be downloaded first. See 
+:ref:`download-timezone-database` for download instructions. To set a non-default
+path for the timezone database while running the unit tests, set the 
+``ARROW_TIMEZONE_DATABASE`` environment variable.
+
 Replicating Appveyor Builds
 ===========================
 
@@ -417,7 +439,7 @@ tests can be made with there individual make targets).
    SET USE_CLCACHE=false
    SET ARROW_BUILD_GANDIVA=OFF
    SET ARROW_LLVM_VERSION=8.0.*
-   SET PYTHON=3.6
+   SET PYTHON=3.9
    SET ARCH=64
    SET PATH=C:\Users\User\Anaconda3;C:\Users\User\Anaconda3\Scripts;C:\Users\User\Anaconda3\Library\bin;%PATH%
    SET BOOST_LIBRARYDIR=C:\Boost\lib

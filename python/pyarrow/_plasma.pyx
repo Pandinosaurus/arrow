@@ -156,7 +156,10 @@ def make_object_id(object_id):
 
 cdef class ObjectID(_Weakrefable):
     """
-    An ObjectID represents a string of bytes used to identify Plasma objects.
+    DEPRECATED: An ObjectID represents a string of bytes used to identify Plasma objects.
+
+    .. deprecated:: 10.0.0
+       Plasma is deprecated since Arrow 10.0.0. It will be removed in 12.0.0 or so.
     """
 
     cdef:
@@ -168,6 +171,10 @@ cdef class ObjectID(_Weakrefable):
             raise ValueError("Object ID must by 20 bytes,"
                              " is " + str(object_id))
         self.data = CUniqueID.from_binary(object_id)
+
+        warnings.warn(
+            "Plasma is deprecated since Arrow 10.0.0. It will be removed in 12.0.0 or so.",
+            DeprecationWarning, stacklevel=2)
 
     def __eq__(self, other):
         try:
@@ -219,12 +226,15 @@ cdef class ObjectNotAvailable(_Weakrefable):
 
 cdef class PlasmaBuffer(Buffer):
     """
-    This is the type returned by calls to get with a PlasmaClient.
+    DEPRECATED: This is the type returned by calls to get with a PlasmaClient.
 
     We define our own class instead of directly returning a buffer object so
     that we can add a custom destructor which notifies Plasma that the object
     is no longer being used, so the memory in the Plasma store backing the
     object can potentially be freed.
+
+    .. deprecated:: 10.0.0
+       Plasma is deprecated since Arrow 10.0.0. It will be removed in 12.0.0 or so.
 
     Attributes
     ----------
@@ -295,11 +305,14 @@ def get_socket_from_fd(fileno, family, type):
 
 cdef class PlasmaClient(_Weakrefable):
     """
-    The PlasmaClient is used to interface with a plasma store and manager.
+    DEPRECATED: The PlasmaClient is used to interface with a plasma store and manager.
 
     The PlasmaClient can ask the PlasmaStore to allocate a new buffer, seal a
     buffer, and get a buffer. Buffers are referred to by object IDs, which are
     strings.
+
+    .. deprecated:: 10.0.0
+       Plasma is deprecated since Arrow 10.0.0. It will be removed in 12.0.0 or so.
     """
 
     cdef:
@@ -311,6 +324,10 @@ cdef class PlasmaClient(_Weakrefable):
         self.client.reset(new CPlasmaClient())
         self.notification_fd = -1
         self.store_socket_name = b""
+
+        warnings.warn(
+            "Plasma is deprecated since Arrow 10.0.0. It will be removed in 12.0.0 or so.",
+            DeprecationWarning, stacklevel=3)
 
     cdef _get_object_buffers(self, object_ids, int64_t timeout_ms,
                              c_vector[CObjectBuffer]* result):
@@ -339,17 +356,22 @@ cdef class PlasmaClient(_Weakrefable):
         """
         Create a new buffer in the PlasmaStore for a particular object ID.
 
-        The returned buffer is mutable until seal is called.
+        The returned buffer is mutable until ``seal()`` is called.
 
         Parameters
         ----------
         object_id : ObjectID
             The object ID used to identify an object.
-        size : int
+        data_size : int
             The size in bytes of the created buffer.
         metadata : bytes
             An optional string of bytes encoding whatever metadata the user
             wishes to encode.
+
+        Returns
+        -------
+        buffer : Buffer
+            A mutable buffer where to write the object data.
 
         Raises
         ------
@@ -357,9 +379,10 @@ cdef class PlasmaClient(_Weakrefable):
             This exception is raised if the object could not be created because
             there already is an object with the same ID in the plasma store.
 
-        PlasmaStoreFull: This exception is raised if the object could
-                not be created because the plasma store is unable to evict
-                enough objects to create room for it.
+        PlasmaStoreFull
+            This exception is raised if the object could
+            not be created because the plasma store is unable to evict
+            enough objects to create room for it.
         """
         cdef shared_ptr[CBuffer] data
         with nogil:
@@ -498,7 +521,8 @@ cdef class PlasmaClient(_Weakrefable):
 
         Returns
         -------
-        The object ID associated to the Python buffer object.
+        ObjectID
+            The object ID associated to the Python buffer object.
         """
         cdef ObjectID target_id = (object_id if object_id
                                    else ObjectID.from_random())
@@ -530,7 +554,8 @@ cdef class PlasmaClient(_Weakrefable):
 
         Returns
         -------
-        The object ID associated to the Python object.
+        ObjectID
+            The object ID associated to the Python object.
         """
         cdef ObjectID target_id = (object_id if object_id
                                    else ObjectID.from_random())
@@ -846,8 +871,11 @@ cdef class PlasmaClient(_Weakrefable):
 
 def connect(store_socket_name, int num_retries=-1):
     """
-    Return a new PlasmaClient that is connected a plasma store and
+    DEPRECATED: Return a new PlasmaClient that is connected a plasma store and
     optionally a manager.
+
+    .. deprecated:: 10.0.0
+       Plasma is deprecated since Arrow 10.0.0. It will be removed in 12.0.0 or so.
 
     Parameters
     ----------

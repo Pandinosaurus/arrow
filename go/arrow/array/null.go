@@ -23,9 +23,9 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v7/arrow"
-	"github.com/apache/arrow/go/v7/arrow/internal/debug"
-	"github.com/apache/arrow/go/v7/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/internal/debug"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/goccy/go-json"
 )
 
@@ -51,10 +51,10 @@ func NewNull(n int) *Null {
 }
 
 // NewNullData returns a new Null array value, from data.
-func NewNullData(data *Data) *Null {
+func NewNullData(data arrow.ArrayData) *Null {
 	a := &Null{}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
@@ -94,6 +94,8 @@ func NewNullBuilder(mem memory.Allocator) *NullBuilder {
 	return &NullBuilder{builder: builder{refCount: 1, mem: mem}}
 }
 
+func (b *NullBuilder) Type() arrow.DataType { return arrow.Null }
+
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
 func (b *NullBuilder) Release() {
@@ -112,6 +114,8 @@ func (b *NullBuilder) AppendNull() {
 	b.builder.nulls++
 }
 
+func (b *NullBuilder) AppendEmptyValue() { b.AppendNull() }
+
 func (*NullBuilder) Reserve(size int) {}
 func (*NullBuilder) Resize(size int)  {}
 
@@ -120,7 +124,7 @@ func (*NullBuilder) resize(newBits int, init func(int)) {}
 
 // NewArray creates a Null array from the memory buffers used by the builder and resets the NullBuilder
 // so it can be used to build a new array.
-func (b *NullBuilder) NewArray() Interface {
+func (b *NullBuilder) NewArray() arrow.Array {
 	return b.NewNullArray()
 }
 
@@ -189,6 +193,6 @@ func (b *NullBuilder) UnmarshalJSON(data []byte) error {
 }
 
 var (
-	_ Interface = (*Null)(nil)
-	_ Builder   = (*NullBuilder)(nil)
+	_ arrow.Array = (*Null)(nil)
+	_ Builder     = (*NullBuilder)(nil)
 )

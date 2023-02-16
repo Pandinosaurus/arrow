@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v7/arrow"
-	"github.com/apache/arrow/go/v7/arrow/bitutil"
-	"github.com/apache/arrow/go/v7/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/bitutil"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/goccy/go-json"
 )
 
@@ -34,6 +34,9 @@ const (
 type Builder interface {
 	// you can unmarshal a json array to add the values to a builder
 	json.Unmarshaler
+
+	// Type returns the datatype that this is building
+	Type() arrow.DataType
 
 	// Retain increases the reference count by 1.
 	// Retain may be called simultaneously from multiple goroutines.
@@ -55,6 +58,9 @@ type Builder interface {
 	// AppendNull adds a new null value to the array being built.
 	AppendNull()
 
+	// AppendEmptyValue adds a new zero value of the appropriate type
+	AppendEmptyValue()
+
 	// Reserve ensures there is enough space for appending n elements
 	// by checking the capacity and calling Resize if necessary.
 	Reserve(n int)
@@ -66,13 +72,17 @@ type Builder interface {
 	// NewArray creates a new array from the memory buffers used
 	// by the builder and resets the Builder so it can be used to build
 	// a new array.
-	NewArray() Interface
+	NewArray() arrow.Array
+
+	UnsafeAppendBoolToBitmap(bool)
 
 	init(capacity int)
 	resize(newBits int, init func(int))
 
 	unmarshalOne(*json.Decoder) error
 	unmarshal(*json.Decoder) error
+
+	newData() *Data
 }
 
 // builder provides common functionality for managing the validity bitmap (nulls) when building arrays.
@@ -249,8 +259,12 @@ func NewBuilder(mem memory.Allocator, dtype arrow.DataType) Builder {
 		return NewFloat64Builder(mem)
 	case arrow.STRING:
 		return NewStringBuilder(mem)
+	case arrow.LARGE_STRING:
+		return NewLargeStringBuilder(mem)
 	case arrow.BINARY:
 		return NewBinaryBuilder(mem, arrow.BinaryTypes.Binary)
+	case arrow.LARGE_BINARY:
+		return NewBinaryBuilder(mem, arrow.BinaryTypes.LargeBinary)
 	case arrow.FIXED_SIZE_BINARY:
 		typ := dtype.(*arrow.FixedSizeBinaryType)
 		return NewFixedSizeBinaryBuilder(mem, typ)
@@ -267,15 +281,6 @@ func NewBuilder(mem memory.Allocator, dtype arrow.DataType) Builder {
 	case arrow.TIME64:
 		typ := dtype.(*arrow.Time64Type)
 		return NewTime64Builder(mem, typ)
-	case arrow.INTERVAL:
-		switch dtype.(type) {
-		case *arrow.DayTimeIntervalType:
-			return NewDayTimeIntervalBuilder(mem)
-		case *arrow.MonthIntervalType:
-			return NewMonthIntervalBuilder(mem)
-		case *arrow.MonthDayNanoIntervalType:
-			return NewMonthDayNanoIntervalBuilder(mem)
-		}
 	case arrow.INTERVAL_MONTHS:
 		return NewMonthIntervalBuilder(mem)
 	case arrow.INTERVAL_DAY_TIME:
@@ -287,21 +292,30 @@ func NewBuilder(mem memory.Allocator, dtype arrow.DataType) Builder {
 			return NewDecimal128Builder(mem, typ)
 		}
 	case arrow.DECIMAL256:
+		if typ, ok := dtype.(*arrow.Decimal256Type); ok {
+			return NewDecimal256Builder(mem, typ)
+		}
 	case arrow.LIST:
 		typ := dtype.(*arrow.ListType)
-		return NewListBuilder(mem, typ.Elem())
+		return NewListBuilderWithField(mem, typ.ElemField())
 	case arrow.STRUCT:
 		typ := dtype.(*arrow.StructType)
 		return NewStructBuilder(mem, typ)
 	case arrow.SPARSE_UNION:
+		typ := dtype.(*arrow.SparseUnionType)
+		return NewSparseUnionBuilder(mem, typ)
 	case arrow.DENSE_UNION:
+		typ := dtype.(*arrow.DenseUnionType)
+		return NewDenseUnionBuilder(mem, typ)
 	case arrow.DICTIONARY:
-	case arrow.LARGE_STRING:
-	case arrow.LARGE_BINARY:
+		typ := dtype.(*arrow.DictionaryType)
+		return NewDictionaryBuilder(mem, typ)
 	case arrow.LARGE_LIST:
+		typ := dtype.(*arrow.LargeListType)
+		return NewLargeListBuilderWithField(mem, typ.ElemField())
 	case arrow.MAP:
 		typ := dtype.(*arrow.MapType)
-		return NewMapBuilder(mem, typ.KeyType(), typ.ItemType(), typ.KeysSorted)
+		return NewMapBuilderWithType(mem, typ)
 	case arrow.EXTENSION:
 		typ := dtype.(arrow.ExtensionType)
 		return NewExtensionBuilder(mem, typ)
@@ -311,6 +325,9 @@ func NewBuilder(mem memory.Allocator, dtype arrow.DataType) Builder {
 	case arrow.DURATION:
 		typ := dtype.(*arrow.DurationType)
 		return NewDurationBuilder(mem, typ)
+	case arrow.RUN_END_ENCODED:
+		typ := dtype.(*arrow.RunEndEncodedType)
+		return NewRunEndEncodedBuilder(mem, typ.RunEnds(), typ.Encoded())
 	}
 	panic(fmt.Errorf("arrow/array: unsupported builder for %T", dtype))
 }

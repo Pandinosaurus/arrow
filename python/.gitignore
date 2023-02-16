@@ -15,8 +15,10 @@ Testing/
 # Generated sources
 *.c
 *.cpp
+pyarrow/lib.h
 pyarrow/*_api.h
 pyarrow/_generated_version.py
+cython_debug
 
 # Bundled headers
 pyarrow/include
@@ -29,6 +31,8 @@ dist
 .coverage
 coverage.xml
 htmlcov
+# Hypothesis test framework
+.hypothesis/
 # Cache
 .cache
 

@@ -23,6 +23,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -43,9 +44,8 @@
 #include "arrow/util/logging.h"
 #include "arrow/util/range.h"
 #include "arrow/util/string.h"
-#include "arrow/util/string_view.h"
 #include "arrow/vendored/datetime.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_type_inline.h"
 
 namespace arrow {
 
@@ -290,7 +290,7 @@ class QuadraticSpaceMyersDiff {
 
     for (int64_t i = edit_count_; i > 0; --i) {
       bool insert = insert_[index];
-      BitUtil::SetBitTo(insert_buf->mutable_data(), i, insert);
+      bit_util::SetBitTo(insert_buf->mutable_data(), i, insert);
 
       auto insertions_minus_deletions =
           (endpoint.base - base_begin_) - (endpoint.target - target_begin_);
@@ -308,7 +308,7 @@ class QuadraticSpaceMyersDiff {
 
       endpoint = previous;
     }
-    BitUtil::SetBitTo(insert_buf->mutable_data(), 0, false);
+    bit_util::SetBitTo(insert_buf->mutable_data(), 0, false);
     run_length[0] = endpoint.base - base_begin_;
 
     return StructArray::Make(
@@ -399,8 +399,8 @@ class MakeFormatterImpl {
   }
 
  private:
-  template <typename VISITOR>
-  friend Status VisitTypeInline(const DataType&, VISITOR*);
+  template <typename VISITOR, typename... ARGS>
+  friend Status VisitTypeInline(const DataType&, VISITOR*, ARGS&&... args);
 
   // factory implementation
   Status Visit(const BooleanType&) {
@@ -639,42 +639,44 @@ class MakeFormatterImpl {
       auto fmt = fmt_str.c_str();
       auto unit = checked_cast<const T&>(*array.type()).unit();
       auto value = checked_cast<const NumericArray<T>&>(array).Value(index);
-      using arrow_vendored::date::format;
+      // Using unqualified `format` directly would produce ambiguous
+      // lookup because of `std::format` (ARROW-15520).
+      namespace avd = arrow_vendored::date;
       using std::chrono::nanoseconds;
       using std::chrono::microseconds;
       using std::chrono::milliseconds;
       using std::chrono::seconds;
       if (AddEpoch) {
-        static arrow_vendored::date::sys_days epoch{arrow_vendored::date::jan / 1 / 1970};
+        static avd::sys_days epoch{avd::jan / 1 / 1970};
 
         switch (unit) {
           case TimeUnit::NANO:
-            *os << format(fmt, static_cast<nanoseconds>(value) + epoch);
+            *os << avd::format(fmt, static_cast<nanoseconds>(value) + epoch);
             break;
           case TimeUnit::MICRO:
-            *os << format(fmt, static_cast<microseconds>(value) + epoch);
+            *os << avd::format(fmt, static_cast<microseconds>(value) + epoch);
             break;
           case TimeUnit::MILLI:
-            *os << format(fmt, static_cast<milliseconds>(value) + epoch);
+            *os << avd::format(fmt, static_cast<milliseconds>(value) + epoch);
             break;
           case TimeUnit::SECOND:
-            *os << format(fmt, static_cast<seconds>(value) + epoch);
+            *os << avd::format(fmt, static_cast<seconds>(value) + epoch);
             break;
         }
         return;
       }
       switch (unit) {
         case TimeUnit::NANO:
-          *os << format(fmt, static_cast<nanoseconds>(value));
+          *os << avd::format(fmt, static_cast<nanoseconds>(value));
           break;
         case TimeUnit::MICRO:
-          *os << format(fmt, static_cast<microseconds>(value));
+          *os << avd::format(fmt, static_cast<microseconds>(value));
           break;
         case TimeUnit::MILLI:
-          *os << format(fmt, static_cast<milliseconds>(value));
+          *os << avd::format(fmt, static_cast<milliseconds>(value));
           break;
         case TimeUnit::SECOND:
-          *os << format(fmt, static_cast<seconds>(value));
+          *os << avd::format(fmt, static_cast<seconds>(value));
           break;
       }
     };

@@ -10,7 +10,7 @@ to_arrow(.data)
 \item{.data}{the object to be converted}
 }
 \value{
-an \code{arrow_dplyr_query} object, to be used in dplyr pipelines.
+A \code{RecordBatchReader}.
 }
 \description{
 This can be used in pipelines that pass data back and forth between Arrow and

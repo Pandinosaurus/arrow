@@ -20,6 +20,7 @@ package org.apache.arrow.flight;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
+import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Arrays;
@@ -28,7 +29,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.function.Function;
 
-import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.function.Executable;
 
@@ -51,7 +52,13 @@ public class FlightTestUtil {
     IOException lastThrown = null;
     T server = null;
     for (int x = 0; x < 3; x++) {
-      final int port = 49152 + RANDOM.nextInt(5000);
+      int port;
+      try (final ServerSocket dynamicPortSocket = new ServerSocket(0)) {
+        port = dynamicPortSocket.getLocalPort();
+      } catch (SecurityException | IOException e) {
+        throw new RuntimeException("Unable to create a ServerSocket instance. ", e);
+      }
+
       final Location location = Location.forGrpcInsecure(LOCALHOST, port);
       lastThrown = null;
       try {
@@ -130,7 +137,7 @@ public class FlightTestUtil {
    */
   public static CallStatus assertCode(FlightStatusCode code, Executable r) {
     final FlightRuntimeException ex = Assertions.assertThrows(FlightRuntimeException.class, r);
-    Assert.assertEquals(code, ex.status().code());
+    Assertions.assertEquals(code, ex.status().code());
     return ex.status();
   }
 

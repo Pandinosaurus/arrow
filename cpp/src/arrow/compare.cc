@@ -43,10 +43,12 @@
 #include "arrow/util/bitmap_ops.h"
 #include "arrow/util/bitmap_reader.h"
 #include "arrow/util/checked_cast.h"
+#include "arrow/util/key_value_metadata.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/macros.h"
 #include "arrow/util/memory.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_scalar_inline.h"
+#include "arrow/visit_type_inline.h"
 
 namespace arrow {
 
@@ -63,56 +65,77 @@ namespace {
 
 // TODO also handle HALF_FLOAT NaNs
 
-enum FloatingEqualityFlags : int8_t { Approximate = 1, NansEqual = 2 };
+template <bool Approximate, bool NansEqual, bool SignedZerosEqual>
+struct FloatingEqualityFlags {
+  static constexpr bool approximate = Approximate;
+  static constexpr bool nans_equal = NansEqual;
+  static constexpr bool signed_zeros_equal = SignedZerosEqual;
+};
 
-template <typename T, int8_t Flags>
+template <typename T, typename Flags>
 struct FloatingEquality {
-  bool operator()(T x, T y) { return x == y; }
-};
-
-template <typename T>
-struct FloatingEquality<T, NansEqual> {
-  bool operator()(T x, T y) { return (x == y) || (std::isnan(x) && std::isnan(y)); }
-};
-
-template <typename T>
-struct FloatingEquality<T, Approximate> {
   explicit FloatingEquality(const EqualOptions& options)
       : epsilon(static_cast<T>(options.atol())) {}
 
-  bool operator()(T x, T y) { return (fabs(x - y) <= epsilon) || (x == y); }
-
-  const T epsilon;
-};
-
-template <typename T>
-struct FloatingEquality<T, Approximate | NansEqual> {
-  explicit FloatingEquality(const EqualOptions& options)
-      : epsilon(static_cast<T>(options.atol())) {}
-
-  bool operator()(T x, T y) {
-    return (fabs(x - y) <= epsilon) || (x == y) || (std::isnan(x) && std::isnan(y));
+  bool operator()(T x, T y) const {
+    if (x == y) {
+      return Flags::signed_zeros_equal || (std::signbit(x) == std::signbit(y));
+    }
+    if (Flags::nans_equal && std::isnan(x) && std::isnan(y)) {
+      return true;
+    }
+    if (Flags::approximate && (fabs(x - y) <= epsilon)) {
+      return true;
+    }
+    return false;
   }
 
   const T epsilon;
 };
 
 template <typename T, typename Visitor>
-void VisitFloatingEquality(const EqualOptions& options, bool floating_approximate,
-                           Visitor&& visit) {
-  if (options.nans_equal()) {
-    if (floating_approximate) {
-      visit(FloatingEquality<T, NansEqual | Approximate>{options});
+struct FloatingEqualityDispatcher {
+  const EqualOptions& options;
+  bool floating_approximate;
+  Visitor&& visit;
+
+  template <bool Approximate, bool NansEqual>
+  void DispatchL3() {
+    if (options.signed_zeros_equal()) {
+      visit(FloatingEquality<T, FloatingEqualityFlags<Approximate, NansEqual, true>>{
+          options});
     } else {
-      visit(FloatingEquality<T, NansEqual>{});
-    }
-  } else {
-    if (floating_approximate) {
-      visit(FloatingEquality<T, Approximate>{options});
-    } else {
-      visit(FloatingEquality<T, 0>{});
+      visit(FloatingEquality<T, FloatingEqualityFlags<Approximate, NansEqual, false>>{
+          options});
     }
   }
+
+  template <bool Approximate>
+  void DispatchL2() {
+    if (options.nans_equal()) {
+      DispatchL3<Approximate, true>();
+    } else {
+      DispatchL3<Approximate, false>();
+    }
+  }
+
+  void Dispatch() {
+    if (floating_approximate) {
+      DispatchL2<true>();
+    } else {
+      DispatchL2<false>();
+    }
+  }
+};
+
+// Call `visit(equality_func)` where `equality_func` has the signature `bool(T, T)`
+// and returns true if the two values compare equal.
+template <typename T, typename Visitor>
+void VisitFloatingEquality(const EqualOptions& options, bool floating_approximate,
+                           Visitor&& visit) {
+  FloatingEqualityDispatcher<T, Visitor>{options, floating_approximate,
+                                         std::forward<Visitor>(visit)}
+      .Dispatch();
 }
 
 inline bool IdentityImpliesEqualityNansNotEqual(const DataType& type) {
@@ -202,8 +225,8 @@ class RangeDataEqualsImpl {
       if (length <= 8) {
         // Avoid the BitmapUInt64Reader overhead for very small runs
         for (int64_t j = i; j < i + length; ++j) {
-          if (BitUtil::GetBit(left_bits, left_start_idx_ + left_.offset + j) !=
-              BitUtil::GetBit(right_bits, right_start_idx_ + right_.offset + j)) {
+          if (bit_util::GetBit(left_bits, left_start_idx_ + left_.offset + j) !=
+              bit_util::GetBit(right_bits, right_start_idx_ + right_.offset + j)) {
             return false;
           }
         }
@@ -372,26 +395,6 @@ class RangeDataEqualsImpl {
   }
 
  protected:
-  // For CompareFloating (templated local classes or lambdas not supported in C++11)
-  template <typename CType>
-  struct ComparatorVisitor {
-    RangeDataEqualsImpl* impl;
-    const CType* left_values;
-    const CType* right_values;
-
-    template <typename CompareFunction>
-    void operator()(CompareFunction&& compare) {
-      impl->VisitValues([&](int64_t i) {
-        const CType x = left_values[i + impl->left_start_idx_];
-        const CType y = right_values[i + impl->right_start_idx_];
-        return compare(x, y);
-      });
-    }
-  };
-
-  template <typename CType>
-  friend struct ComparatorVisitor;
-
   template <typename TypeClass, typename CType = typename TypeClass::c_type>
   Status ComparePrimitive(const TypeClass&) {
     const CType* left_values = left_.GetValues<CType>(1);
@@ -409,8 +412,14 @@ class RangeDataEqualsImpl {
     const CType* left_values = left_.GetValues<CType>(1);
     const CType* right_values = right_.GetValues<CType>(1);
 
-    ComparatorVisitor<CType> visitor{this, left_values, right_values};
-    VisitFloatingEquality<CType>(options_, floating_approximate_, visitor);
+    auto visitor = [&](auto&& compare_func) {
+      VisitValues([&](int64_t i) {
+        const CType x = left_values[i + left_start_idx_];
+        const CType y = right_values[i + right_start_idx_];
+        return compare_func(x, y);
+      });
+    };
+    VisitFloatingEquality<CType>(options_, floating_approximate_, std::move(visitor));
     return Status::OK();
   }
 
@@ -551,6 +560,14 @@ class TypeEqualsVisitor {
   explicit TypeEqualsVisitor(const DataType& right, bool check_metadata)
       : right_(right), check_metadata_(check_metadata), result_(false) {}
 
+  bool MetadataEqual(const Field& left, const Field& right) {
+    if (left.HasMetadata() && right.HasMetadata()) {
+      return left.metadata()->Equals(*right.metadata());
+    } else {
+      return !left.HasMetadata() && !right.HasMetadata();
+    }
+  }
+
   Status VisitChildren(const DataType& left) {
     if (left.num_fields() != right_.num_fields()) {
       result_ = false;
@@ -618,14 +635,39 @@ class TypeEqualsVisitor {
   }
 
   template <typename T>
-  enable_if_t<is_list_like_type<T>::value || is_struct_type<T>::value, Status> Visit(
-      const T& left) {
+  enable_if_t<is_list_like_type<T>::value, Status> Visit(const T& left) {
+    std::shared_ptr<Field> left_field = left.field(0);
+    std::shared_ptr<Field> right_field = checked_cast<const T&>(right_).field(0);
+    bool equal_names = !check_metadata_ || (left_field->name() == right_field->name());
+    bool equal_metadata = !check_metadata_ || MetadataEqual(*left_field, *right_field);
+
+    result_ = equal_names && equal_metadata &&
+              (left_field->nullable() == right_field->nullable()) &&
+              left_field->type()->Equals(*right_field->type(), check_metadata_);
+
+    return Status::OK();
+  }
+
+  template <typename T>
+  enable_if_t<is_struct_type<T>::value, Status> Visit(const T& left) {
     return VisitChildren(left);
   }
 
   Status Visit(const MapType& left) {
     const auto& right = checked_cast<const MapType&>(right_);
     if (left.keys_sorted() != right.keys_sorted()) {
+      result_ = false;
+      return Status::OK();
+    }
+    if (check_metadata_ && (left.item_field()->name() != right.item_field()->name() ||
+                            left.key_field()->name() != right.key_field()->name() ||
+                            left.value_field()->name() != right.value_field()->name())) {
+      result_ = false;
+      return Status::OK();
+    }
+    if (check_metadata_ && !(MetadataEqual(*left.item_field(), *right.item_field()) &&
+                             MetadataEqual(*left.key_field(), *right.key_field()) &&
+                             MetadataEqual(*left.value_field(), *right.value_field()))) {
       result_ = false;
       return Status::OK();
     }
@@ -774,9 +816,16 @@ class ScalarEqualsVisitor {
     return Status::OK();
   }
 
-  Status Visit(const UnionScalar& left) {
-    const auto& right = checked_cast<const UnionScalar&>(right_);
+  Status Visit(const DenseUnionScalar& left) {
+    const auto& right = checked_cast<const DenseUnionScalar&>(right_);
     result_ = ScalarEquals(*left.value, *right.value, options_, floating_approximate_);
+    return Status::OK();
+  }
+
+  Status Visit(const SparseUnionScalar& left) {
+    const auto& right = checked_cast<const SparseUnionScalar&>(right_);
+    result_ = ScalarEquals(*left.value[left.child_id], *right.value[right.child_id],
+                           options_, floating_approximate_);
     return Status::OK();
   }
 
@@ -798,26 +847,15 @@ class ScalarEqualsVisitor {
   bool result() const { return result_; }
 
  protected:
-  // For CompareFloating (templated local classes or lambdas not supported in C++11)
-  template <typename ScalarType>
-  struct ComparatorVisitor {
-    const ScalarType& left;
-    const ScalarType& right;
-    bool* result;
-
-    template <typename CompareFunction>
-    void operator()(CompareFunction&& compare) {
-      *result = compare(left.value, right.value);
-    }
-  };
-
   template <typename ScalarType>
   Status CompareFloating(const ScalarType& left) {
     using CType = decltype(left.value);
+    const auto& right = checked_cast<const ScalarType&>(right_);
 
-    ComparatorVisitor<ScalarType> visitor{left, checked_cast<const ScalarType&>(right_),
-                                          &result_};
-    VisitFloatingEquality<CType>(options_, floating_approximate_, visitor);
+    auto visitor = [&](auto&& compare_func) {
+      result_ = compare_func(left.value, right.value);
+    };
+    VisitFloatingEquality<CType>(options_, floating_approximate_, std::move(visitor));
     return Status::OK();
   }
 
@@ -1000,10 +1038,10 @@ bool IntegerTensorEquals(const Tensor& left, const Tensor& right) {
     if (!(left_row_major_p && right_row_major_p) &&
         !(left_column_major_p && right_column_major_p)) {
       const auto& type = checked_cast<const FixedWidthType&>(*left.type());
-      are_equal = StridedIntegerTensorContentEquals(0, 0, 0, internal::GetByteWidth(type),
-                                                    left, right);
+      are_equal =
+          StridedIntegerTensorContentEquals(0, 0, 0, type.byte_width(), left, right);
     } else {
-      const int byte_width = internal::GetByteWidth(*left.type());
+      const int byte_width = left.type()->byte_width();
       DCHECK_GT(byte_width, 0);
 
       const uint8_t* left_data = left.data()->data();
@@ -1028,32 +1066,30 @@ bool StridedFloatTensorContentEquals(const int dim_index, int64_t left_offset,
   const auto left_stride = left.strides()[dim_index];
   const auto right_stride = right.strides()[dim_index];
   if (dim_index == left.ndim() - 1) {
+    // Leaf dimension, compare values
     auto left_data = left.raw_data();
     auto right_data = right.raw_data();
-    if (opts.nans_equal()) {
+    bool result = true;
+
+    auto visitor = [&](auto&& compare_func) {
       for (int64_t i = 0; i < n; ++i) {
         c_type left_value =
             *reinterpret_cast<const c_type*>(left_data + left_offset + i * left_stride);
         c_type right_value = *reinterpret_cast<const c_type*>(right_data + right_offset +
                                                               i * right_stride);
-        if (left_value != right_value &&
-            !(std::isnan(left_value) && std::isnan(right_value))) {
-          return false;
+        if (!compare_func(left_value, right_value)) {
+          result = false;
+          return;
         }
       }
-    } else {
-      for (int64_t i = 0; i < n; ++i) {
-        c_type left_value =
-            *reinterpret_cast<const c_type*>(left_data + left_offset + i * left_stride);
-        c_type right_value = *reinterpret_cast<const c_type*>(right_data + right_offset +
-                                                              i * right_stride);
-        if (left_value != right_value) {
-          return false;
-        }
-      }
-    }
-    return true;
+    };
+
+    VisitFloatingEquality<c_type>(opts, /*floating_approximate=*/false,
+                                  std::move(visitor));
+    return result;
   }
+
+  // Outer dimension, recurse into inner
   for (int64_t i = 0; i < n; ++i) {
     if (!StridedFloatTensorContentEquals<DataType>(dim_index + 1, left_offset,
                                                    right_offset, left, right, opts)) {
@@ -1163,7 +1199,7 @@ struct SparseTensorEqualsImpl<SparseIndexType, SparseIndexType> {
       return false;
     }
 
-    const int byte_width = internal::GetByteWidth(*left.type());
+    const int byte_width = left.type()->byte_width();
     DCHECK_GT(byte_width, 0);
 
     const uint8_t* left_data = left.data()->data();

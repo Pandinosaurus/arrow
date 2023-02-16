@@ -23,12 +23,7 @@ jobs:
   test:
     name: OSS-Fuzz build test
     runs-on: ubuntu-latest
-  {% if env is defined %}
-    env:
-    {% for key, value in env.items() %}
-      {{ key }}: "{{ value }}"
-    {% endfor %}
-  {% endif %}
+{{ macros.github_set_env(env) }}
     steps:
       {{ macros.github_checkout_arrow()|indent }}
 
@@ -37,10 +32,6 @@ jobs:
         #  location choice is relatively obscure)
         run: |
           git clone --depth=50 https://github.com/google/oss-fuzz.git
-
-      - name: Free Up Disk Space
-        shell: bash
-        run: arrow/ci/scripts/util_cleanup.sh
 
       - name: Install dependencies
         working-directory: oss-fuzz

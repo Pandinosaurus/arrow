@@ -20,8 +20,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/apache/arrow/go/v7/arrow"
-	"github.com/apache/arrow/go/v7/arrow/float16"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/float16"
 	"github.com/goccy/go-json"
 )
 
@@ -31,10 +31,10 @@ type Float16 struct {
 	values []float16.Num
 }
 
-func NewFloat16Data(data *Data) *Float16 {
+func NewFloat16Data(data arrow.ArrayData) *Float16 {
 	a := &Float16{}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
@@ -103,5 +103,5 @@ func arrayEqualFloat16(left, right *Float16) bool {
 }
 
 var (
-	_ Interface = (*Float16)(nil)
+	_ arrow.Array = (*Float16)(nil)
 )

@@ -106,10 +106,34 @@ namespace red_arrow {
       return ULL2NUM(array.Value(i));
     }
 
-    // TODO
-    // inline VALUE convert(const arrow::HalfFloatArray& array,
-    //                      const int64_t i) {
-    // }
+    inline VALUE convert(const arrow::HalfFloatArray& array,
+                         const int64_t i) {
+      const auto value = array.Value(i);
+      // | sign (1 bit) | exponent (5 bit) | fraction (10 bit) |
+      constexpr auto exponent_n_bits = 5;
+      static const auto exponent_mask =
+        static_cast<uint32_t>(std::pow(2.0, exponent_n_bits) - 1);
+      constexpr auto exponent_bias = 15;
+      constexpr auto fraction_n_bits = 10;
+      static const auto fraction_mask =
+        static_cast<uint32_t>(std::pow(2.0, fraction_n_bits)) - 1;
+      static const auto fraction_denominator = std::pow(2.0, fraction_n_bits);
+      const auto sign = value >> (exponent_n_bits + fraction_n_bits);
+      const auto exponent = (value >> fraction_n_bits) & exponent_mask;
+      const auto fraction = value & fraction_mask;
+      if (exponent == exponent_mask) {
+        if (sign == 0) {
+          return DBL2NUM(HUGE_VAL);
+        } else {
+          return DBL2NUM(-HUGE_VAL);
+        }
+      } else {
+        const auto implicit_fraction = (exponent == 0) ? 0 : 1;
+        return DBL2NUM(((sign == 0) ? 1 : -1) *
+                       std::pow(2.0, exponent - exponent_bias) *
+                       (implicit_fraction + fraction / fraction_denominator));
+      }
+    }
 
     inline VALUE convert(const arrow::FloatArray& array,
                          const int64_t i) {
@@ -202,6 +226,40 @@ namespace red_arrow {
     //                      const int64_t i) {
     // };
 
+    inline VALUE convert(const arrow::MonthIntervalArray& array,
+                         const int64_t i) {
+      return INT2NUM(array.Value(i));
+    }
+
+    inline VALUE convert(const arrow::DayTimeIntervalArray& array,
+                         const int64_t i) {
+      auto value = rb_hash_new();
+      auto arrow_value = array.Value(i);
+      rb_hash_aset(value,
+                   red_arrow::symbols::day,
+                   INT2NUM(arrow_value.days));
+      rb_hash_aset(value,
+                   red_arrow::symbols::millisecond,
+                   INT2NUM(arrow_value.milliseconds));
+      return value;
+    }
+
+    inline VALUE convert(const arrow::MonthDayNanoIntervalArray& array,
+                         const int64_t i) {
+      auto value = rb_hash_new();
+      auto arrow_value = array.Value(i);
+      rb_hash_aset(value,
+                   red_arrow::symbols::month,
+                   INT2NUM(arrow_value.months));
+      rb_hash_aset(value,
+                   red_arrow::symbols::day,
+                   INT2NUM(arrow_value.days));
+      rb_hash_aset(value,
+                   red_arrow::symbols::nanosecond,
+                   INT2NUM(arrow_value.nanoseconds));
+      return value;
+    }
+
     VALUE convert(const arrow::ListArray& array,
                   const int64_t i);
 
@@ -286,8 +344,7 @@ namespace red_arrow {
     VISIT(UInt16)
     VISIT(UInt32)
     VISIT(UInt64)
-    // TODO
-    // VISIT(HalfFloat)
+    VISIT(HalfFloat)
     VISIT(Float)
     VISIT(Double)
     VISIT(Binary)
@@ -298,8 +355,9 @@ namespace red_arrow {
     VISIT(Time32)
     VISIT(Time64)
     VISIT(Timestamp)
-    // TODO
-    // VISIT(Interval)
+    VISIT(MonthInterval)
+    VISIT(DayTimeInterval)
+    VISIT(MonthDayNanoInterval)
     VISIT(List)
     VISIT(Struct)
     VISIT(Map)
@@ -392,8 +450,7 @@ namespace red_arrow {
     VISIT(UInt16)
     VISIT(UInt32)
     VISIT(UInt64)
-    // TODO
-    // VISIT(HalfFloat)
+    VISIT(HalfFloat)
     VISIT(Float)
     VISIT(Double)
     VISIT(Binary)
@@ -404,8 +461,9 @@ namespace red_arrow {
     VISIT(Time32)
     VISIT(Time64)
     VISIT(Timestamp)
-    // TODO
-    // VISIT(Interval)
+    VISIT(MonthInterval)
+    VISIT(DayTimeInterval)
+    VISIT(MonthDayNanoInterval)
     VISIT(List)
     VISIT(Struct)
     VISIT(Map)
@@ -494,8 +552,7 @@ namespace red_arrow {
     VISIT(UInt16)
     VISIT(UInt32)
     VISIT(UInt64)
-    // TODO
-    // VISIT(HalfFloat)
+    VISIT(HalfFloat)
     VISIT(Float)
     VISIT(Double)
     VISIT(Binary)
@@ -506,8 +563,9 @@ namespace red_arrow {
     VISIT(Time32)
     VISIT(Time64)
     VISIT(Timestamp)
-    // TODO
-    // VISIT(Interval)
+    VISIT(MonthInterval)
+    VISIT(DayTimeInterval)
+    VISIT(MonthDayNanoInterval)
     VISIT(List)
     VISIT(Struct)
     VISIT(Map)
@@ -597,8 +655,7 @@ namespace red_arrow {
     VISIT(UInt16)
     VISIT(UInt32)
     VISIT(UInt64)
-    // TODO
-    // VISIT(HalfFloat)
+    VISIT(HalfFloat)
     VISIT(Float)
     VISIT(Double)
     VISIT(Binary)
@@ -609,8 +666,9 @@ namespace red_arrow {
     VISIT(Time32)
     VISIT(Time64)
     VISIT(Timestamp)
-    // TODO
-    // VISIT(Interval)
+    VISIT(MonthInterval)
+    VISIT(DayTimeInterval)
+    VISIT(MonthDayNanoInterval)
     VISIT(List)
     VISIT(Struct)
     VISIT(Map)
@@ -723,8 +781,7 @@ namespace red_arrow {
     VISIT(UInt16)
     VISIT(UInt32)
     VISIT(UInt64)
-    // TODO
-    // VISIT(HalfFloat)
+    VISIT(HalfFloat)
     VISIT(Float)
     VISIT(Double)
     VISIT(Binary)
@@ -735,8 +792,9 @@ namespace red_arrow {
     VISIT(Time32)
     VISIT(Time64)
     VISIT(Timestamp)
-    // TODO
-    // VISIT(Interval)
+    VISIT(MonthInterval)
+    VISIT(DayTimeInterval)
+    VISIT(MonthDayNanoInterval)
     VISIT(List)
     VISIT(Struct)
     VISIT(Map)

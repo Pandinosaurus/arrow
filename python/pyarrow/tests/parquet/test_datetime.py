@@ -17,6 +17,7 @@
 
 import datetime
 import io
+import warnings
 
 import numpy as np
 import pytest
@@ -41,6 +42,8 @@ except ImportError:
     pd = tm = None
 
 
+# Marks all of the tests in this module
+# Ignore these with pytest ... -m 'not parquet'
 pytestmark = pytest.mark.parquet
 
 
@@ -303,7 +306,7 @@ def test_coerce_int96_timestamp_overflow(pq_reader_method, tempdir):
         elif pq_reader_method == "read_table":
             return pq.read_table(filename, **kwargs)
 
-    # Recreating the initial JIRA issue referrenced in ARROW-12096
+    # Recreating the initial JIRA issue referenced in ARROW-12096
     oob_dts = [
         datetime.datetime(1000, 1, 1),
         datetime.datetime(2000, 1, 1),
@@ -319,7 +322,11 @@ def test_coerce_int96_timestamp_overflow(pq_reader_method, tempdir):
     # with the default resolution of ns, we get wrong values for INT96
     # that are out of bounds for nanosecond range
     tab_error = get_table(pq_reader_method, filename)
-    assert tab_error["a"].to_pylist() != oob_dts
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore",
+                                "Discarding nonzero nanoseconds in conversion",
+                                UserWarning)
+        assert tab_error["a"].to_pylist() != oob_dts
 
     # avoid this overflow by specifying the resolution to use for INT96 values
     tab_correct = get_table(
@@ -438,3 +445,12 @@ def test_noncoerced_nanoseconds_written_without_exception(tempdir):
     filename = tempdir / 'not_written.parquet'
     with pytest.raises(ValueError):
         pq.write_table(tb, filename, coerce_timestamps='ms', version='2.6')
+
+
+def test_duration_type():
+    # ARROW-6780
+    arrays = [pa.array([0, 1, 2, 3], type=pa.duration(unit))
+              for unit in ["s", "ms", "us", "ns"]]
+    table = pa.Table.from_arrays(arrays, ["d[s]", "d[ms]", "d[us]", "d[ns]"])
+
+    _check_roundtrip(table)

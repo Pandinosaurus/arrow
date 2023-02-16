@@ -31,15 +31,6 @@
 
 namespace cp = ::arrow::compute;
 
-#define ABORT_ON_FAILURE(expr)                     \
-  do {                                             \
-    arrow::Status status_ = (expr);                \
-    if (!status_.ok()) {                           \
-      std::cerr << status_.message() << std::endl; \
-      abort();                                     \
-    }                                              \
-  } while (0);
-
 class ExampleFunctionOptionsType : public cp::FunctionOptionsType {
   const char* type_name() const override { return "ExampleFunctionOptionsType"; }
   std::string Stringify(const cp::FunctionOptions&) const override {
@@ -66,12 +57,12 @@ class ExampleFunctionOptions : public cp::FunctionOptions {
 
 std::unique_ptr<cp::FunctionOptions> ExampleFunctionOptionsType::Copy(
     const cp::FunctionOptions&) const {
-  return std::unique_ptr<cp::FunctionOptions>(new ExampleFunctionOptions());
+  return std::make_unique<ExampleFunctionOptions>();
 }
 
-arrow::Status ExampleFunctionImpl(cp::KernelContext* ctx, const cp::ExecBatch& batch,
-                                  arrow::Datum* out) {
-  *out->mutable_array() = *batch[0].array();
+arrow::Status ExampleFunctionImpl(cp::KernelContext* ctx, const cp::ExecSpan& batch,
+                                  cp::ExecResult* out) {
+  out->value = batch[0].array.ToArrayData();
   return arrow::Status::OK();
 }
 
@@ -83,26 +74,27 @@ class ExampleNode : public cp::ExecNode {
   ExampleNode(ExecNode* input, const ExampleNodeOptions&)
       : ExecNode(/*plan=*/input->plan(), /*inputs=*/{input},
                  /*input_labels=*/{"ignored"},
-                 /*output_schema=*/input->output_schema(), /*num_outputs=*/1) {}
+                 /*output_schema=*/input->output_schema()) {}
 
   const char* kind_name() const override { return "ExampleNode"; }
 
-  arrow::Status StartProducing() override {
-    outputs_[0]->InputFinished(this, 0);
-    return arrow::Status::OK();
+  arrow::Status StartProducing() override { return output_->InputFinished(this, 0); }
+
+  void ResumeProducing(ExecNode* output, int32_t counter) override {
+    inputs_[0]->ResumeProducing(this, counter);
+  }
+  void PauseProducing(ExecNode* output, int32_t counter) override {
+    inputs_[0]->PauseProducing(this, counter);
   }
 
-  void ResumeProducing(ExecNode* output) override {}
-  void PauseProducing(ExecNode* output) override {}
+  arrow::Status StopProducingImpl() override { return arrow::Status::OK(); }
 
-  void StopProducing(ExecNode* output) override { inputs_[0]->StopProducing(this); }
-  void StopProducing() override { inputs_[0]->StopProducing(); }
-
-  void InputReceived(ExecNode* input, cp::ExecBatch batch) override {}
-  void ErrorReceived(ExecNode* input, arrow::Status error) override {}
-  void InputFinished(ExecNode* input, int total_batches) override {}
-
-  arrow::Future<> finished() override { return inputs_[0]->finished(); }
+  arrow::Status InputReceived(ExecNode* input, cp::ExecBatch batch) override {
+    return arrow::Status::OK();
+  }
+  arrow::Status InputFinished(ExecNode* input, int total_batches) override {
+    return arrow::Status::OK();
+  }
 };
 
 arrow::Result<cp::ExecNode*> ExampleExecNodeFactory(cp::ExecPlan* plan,
@@ -120,24 +112,23 @@ const cp::FunctionDoc func_doc{
     {"x"},
     "ExampleFunctionOptions"};
 
-int main(int argc, char** argv) {
+arrow::Status RunComputeRegister(int argc, char** argv) {
   const std::string name = "compute_register_example";
-  auto func = std::make_shared<cp::ScalarFunction>(name, cp::Arity::Unary(), &func_doc);
-  cp::ScalarKernel kernel({cp::InputType::Array(arrow::int64())}, arrow::int64(),
-                          ExampleFunctionImpl);
+  auto func = std::make_shared<cp::ScalarFunction>(name, cp::Arity::Unary(), func_doc);
+  cp::ScalarKernel kernel({arrow::int64()}, arrow::int64(), ExampleFunctionImpl);
   kernel.mem_allocation = cp::MemAllocation::NO_PREALLOCATE;
-  ABORT_ON_FAILURE(func->AddKernel(std::move(kernel)));
+  ARROW_RETURN_NOT_OK(func->AddKernel(std::move(kernel)));
 
   auto registry = cp::GetFunctionRegistry();
-  ABORT_ON_FAILURE(registry->AddFunction(std::move(func)));
+  ARROW_RETURN_NOT_OK(registry->AddFunction(std::move(func)));
 
   arrow::Int64Builder builder(arrow::default_memory_pool());
   std::shared_ptr<arrow::Array> arr;
-  ABORT_ON_FAILURE(builder.Append(42));
-  ABORT_ON_FAILURE(builder.Finish(&arr));
+  ARROW_RETURN_NOT_OK(builder.Append(42));
+  ARROW_RETURN_NOT_OK(builder.Finish(&arr));
   auto options = std::make_shared<ExampleFunctionOptions>();
   auto maybe_result = cp::CallFunction(name, {arr}, options.get());
-  ABORT_ON_FAILURE(maybe_result.status());
+  ARROW_RETURN_NOT_OK(maybe_result.status());
 
   std::cout << maybe_result->make_array()->ToString() << std::endl;
 
@@ -148,15 +139,15 @@ int main(int argc, char** argv) {
   std::cerr << maybe_serialized.status().ToString() << std::endl;
 
   auto exec_registry = cp::default_exec_factory_registry();
-  ABORT_ON_FAILURE(
+  ARROW_RETURN_NOT_OK(
       exec_registry->AddFactory("compute_register_example", ExampleExecNodeFactory));
 
   auto maybe_plan = cp::ExecPlan::Make();
-  ABORT_ON_FAILURE(maybe_plan.status());
-  auto plan = maybe_plan.ValueOrDie();
+  ARROW_RETURN_NOT_OK(maybe_plan.status());
+  ARROW_ASSIGN_OR_RAISE(auto plan, maybe_plan);
 
-  arrow::AsyncGenerator<arrow::util::optional<cp::ExecBatch>> source_gen, sink_gen;
-  ABORT_ON_FAILURE(
+  arrow::AsyncGenerator<std::optional<cp::ExecBatch>> source_gen, sink_gen;
+  ARROW_RETURN_NOT_OK(
       cp::Declaration::Sequence(
           {
               {"source", cp::SourceNodeOptions{arrow::schema({}), source_gen}},
@@ -165,6 +156,14 @@ int main(int argc, char** argv) {
           })
           .AddToPlan(plan.get())
           .status());
+  return arrow::Status::OK();
+}
 
+int main(int argc, char** argv) {
+  auto status = RunComputeRegister(argc, argv);
+  if (!status.ok()) {
+    std::cerr << status.ToString() << std::endl;
+    return EXIT_FAILURE;
+  }
   return EXIT_SUCCESS;
 }

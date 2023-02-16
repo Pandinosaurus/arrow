@@ -21,74 +21,54 @@
 #include <memory>
 #include <vector>
 
+#include "arrow/compute/exec/accumulation_queue.h"
+#include "arrow/compute/exec/bloom_filter.h"
 #include "arrow/compute/exec/options.h"
+#include "arrow/compute/exec/query_context.h"
 #include "arrow/compute/exec/schema_util.h"
 #include "arrow/compute/exec/task_util.h"
 #include "arrow/result.h"
 #include "arrow/status.h"
 #include "arrow/type.h"
+#include "arrow/util/tracing.h"
 
 namespace arrow {
 namespace compute {
 
-class ARROW_EXPORT HashJoinSchema {
- public:
-  Status Init(JoinType join_type, const Schema& left_schema,
-              const std::vector<FieldRef>& left_keys, const Schema& right_schema,
-              const std::vector<FieldRef>& right_keys,
-              const std::string& left_field_name_prefix,
-              const std::string& right_field_name_prefix);
-
-  Status Init(JoinType join_type, const Schema& left_schema,
-              const std::vector<FieldRef>& left_keys,
-              const std::vector<FieldRef>& left_output, const Schema& right_schema,
-              const std::vector<FieldRef>& right_keys,
-              const std::vector<FieldRef>& right_output,
-              const std::string& left_field_name_prefix,
-              const std::string& right_field_name_prefix);
-
-  static Status ValidateSchemas(JoinType join_type, const Schema& left_schema,
-                                const std::vector<FieldRef>& left_keys,
-                                const std::vector<FieldRef>& left_output,
-                                const Schema& right_schema,
-                                const std::vector<FieldRef>& right_keys,
-                                const std::vector<FieldRef>& right_output,
-                                const std::string& left_field_name_prefix,
-                                const std::string& right_field_name_prefix);
-
-  std::shared_ptr<Schema> MakeOutputSchema(const std::string& left_field_name_prefix,
-                                           const std::string& right_field_name_prefix);
-
-  static int kMissingField() {
-    return SchemaProjectionMaps<HashJoinProjection>::kMissingField;
-  }
-
-  SchemaProjectionMaps<HashJoinProjection> proj_maps[2];
-
- private:
-  static bool IsTypeSupported(const DataType& type);
-  static Result<std::vector<FieldRef>> VectorDiff(const Schema& schema,
-                                                  const std::vector<FieldRef>& a,
-                                                  const std::vector<FieldRef>& b);
-};
+using arrow::util::AccumulationQueue;
 
 class HashJoinImpl {
  public:
-  using OutputBatchCallback = std::function<void(ExecBatch)>;
-  using FinishedCallback = std::function<void(int64_t)>;
+  using OutputBatchCallback = std::function<Status(int64_t, ExecBatch)>;
+  using BuildFinishedCallback = std::function<Status(size_t)>;
+  using FinishedCallback = std::function<Status(int64_t)>;
+  using RegisterTaskGroupCallback = std::function<int(
+      std::function<Status(size_t, int64_t)>, std::function<Status(size_t)>)>;
+  using StartTaskGroupCallback = std::function<Status(int, int64_t)>;
+  using AbortContinuationImpl = std::function<void()>;
 
   virtual ~HashJoinImpl() = default;
-  virtual Status Init(ExecContext* ctx, JoinType join_type, bool use_sync_execution,
-                      size_t num_threads, HashJoinSchema* schema_mgr,
-                      std::vector<JoinKeyCmp> key_cmp,
+  virtual Status Init(QueryContext* ctx, JoinType join_type, size_t num_threads,
+                      const HashJoinProjectionMaps* proj_map_left,
+                      const HashJoinProjectionMaps* proj_map_right,
+                      std::vector<JoinKeyCmp> key_cmp, Expression filter,
+                      RegisterTaskGroupCallback register_task_group_callback,
+                      StartTaskGroupCallback start_task_group_callback,
                       OutputBatchCallback output_batch_callback,
-                      FinishedCallback finished_callback,
-                      TaskScheduler::ScheduleImpl schedule_task_callback) = 0;
-  virtual Status InputReceived(size_t thread_index, int side, ExecBatch batch) = 0;
-  virtual Status InputFinished(size_t thread_index, int side) = 0;
+                      FinishedCallback finished_callback) = 0;
+
+  virtual Status BuildHashTable(size_t thread_index, AccumulationQueue batches,
+                                BuildFinishedCallback on_finished) = 0;
+  virtual Status ProbeSingleBatch(size_t thread_index, ExecBatch batch) = 0;
+  virtual Status ProbingFinished(size_t thread_index) = 0;
   virtual void Abort(TaskScheduler::AbortContinuationImpl pos_abort_callback) = 0;
+  virtual std::string ToString() const = 0;
 
   static Result<std::unique_ptr<HashJoinImpl>> MakeBasic();
+  static Result<std::unique_ptr<HashJoinImpl>> MakeSwiss();
+
+ protected:
+  util::tracing::Span span_;
 };
 
 }  // namespace compute

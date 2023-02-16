@@ -19,23 +19,26 @@ package csv
 import (
 	"encoding/csv"
 	"io"
+	"math"
+	"math/big"
 	"strconv"
 	"sync"
 
-	"github.com/apache/arrow/go/v7/arrow"
-	"github.com/apache/arrow/go/v7/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
 )
 
-// Writer wraps encoding/csv.Writer and writes array.Record based on a schema.
+// Writer wraps encoding/csv.Writer and writes arrow.Record based on a schema.
 type Writer struct {
-	w         *csv.Writer
-	schema    *arrow.Schema
-	header    bool
-	once      sync.Once
-	nullValue string
+	boolFormatter func(bool) string
+	header        bool
+	nullValue     string
+	once          sync.Once
+	schema        *arrow.Schema
+	w             *csv.Writer
 }
 
-// NewWriter returns a writer that writes array.Records to the CSV file
+// NewWriter returns a writer that writes arrow.Records to the CSV file
 // with the given schema.
 //
 // NewWriter panics if the given schema contains fields that have types that are not
@@ -44,9 +47,10 @@ func NewWriter(w io.Writer, schema *arrow.Schema, opts ...Option) *Writer {
 	validate(schema)
 
 	ww := &Writer{
-		w:         csv.NewWriter(w),
-		schema:    schema,
-		nullValue: "NULL", // override by passing WithNullWriter() as an option
+		boolFormatter: strconv.FormatBool, // override by passing WithBoolWriter() as an option
+		nullValue:     "NULL",             // override by passing WithNullWriter() as an option
+		schema:        schema,
+		w:             csv.NewWriter(w),
 	}
 	for _, opt := range opts {
 		opt(ww)
@@ -58,7 +62,7 @@ func NewWriter(w io.Writer, schema *arrow.Schema, opts ...Option) *Writer {
 func (w *Writer) Schema() *arrow.Schema { return w.schema }
 
 // Write writes a single Record as one row to the CSV file
-func (w *Writer) Write(record array.Record) error {
+func (w *Writer) Write(record arrow.Record) error {
 	if !record.Schema().Equal(w.schema) {
 		return ErrMismatchFields
 	}
@@ -84,7 +88,7 @@ func (w *Writer) Write(record array.Record) error {
 			arr := col.(*array.Boolean)
 			for i := 0; i < arr.Len(); i++ {
 				if arr.IsValid(i) {
-					recs[i][j] = strconv.FormatBool(arr.Value(i))
+					recs[i][j] = w.boolFormatter(arr.Value(i))
 				} else {
 					recs[i][j] = w.nullValue
 				}
@@ -184,6 +188,63 @@ func (w *Writer) Write(record array.Record) error {
 			for i := 0; i < arr.Len(); i++ {
 				if arr.IsValid(i) {
 					recs[i][j] = arr.Value(i)
+				} else {
+					recs[i][j] = w.nullValue
+				}
+			}
+		case *arrow.Date32Type:
+			arr := col.(*array.Date32)
+			for i := 0; i < arr.Len(); i++ {
+				if arr.IsValid(i) {
+					recs[i][j] = arr.Value(i).FormattedString()
+				} else {
+					recs[i][j] = w.nullValue
+				}
+			}
+		case *arrow.Date64Type:
+			arr := col.(*array.Date64)
+			for i := 0; i < arr.Len(); i++ {
+				if arr.IsValid(i) {
+					recs[i][j] = arr.Value(i).FormattedString()
+				} else {
+					recs[i][j] = w.nullValue
+				}
+			}
+
+		case *arrow.TimestampType:
+			arr := col.(*array.Timestamp)
+			t := w.schema.Field(j).Type.(*arrow.TimestampType)
+			for i := 0; i < arr.Len(); i++ {
+				if arr.IsValid(i) {
+					recs[i][j] = arr.Value(i).ToTime(t.Unit).Format("2006-01-02 15:04:05.999999999")
+				} else {
+					recs[i][j] = w.nullValue
+				}
+			}
+		case *arrow.Decimal128Type:
+			fieldType := w.schema.Field(j).Type.(*arrow.Decimal128Type)
+			scale := fieldType.Scale
+			precision := fieldType.Precision
+			arr := col.(*array.Decimal128)
+			for i := 0; i < arr.Len(); i++ {
+				if arr.IsValid(i) {
+					f := (&big.Float{}).SetInt(arr.Value(i).BigInt())
+					f.Quo(f, big.NewFloat(math.Pow10(int(scale))))
+					recs[i][j] = f.Text('g', int(precision))
+				} else {
+					recs[i][j] = w.nullValue
+				}
+			}
+		case *arrow.Decimal256Type:
+			fieldType := w.schema.Field(j).Type.(*arrow.Decimal256Type)
+			scale := fieldType.Scale
+			precision := fieldType.Precision
+			arr := col.(*array.Decimal256)
+			for i := 0; i < arr.Len(); i++ {
+				if arr.IsValid(i) {
+					f := (&big.Float{}).SetInt(arr.Value(i).BigInt())
+					f.Quo(f, big.NewFloat(math.Pow10(int(scale))))
+					recs[i][j] = f.Text('g', int(precision))
 				} else {
 					recs[i][j] = w.nullValue
 				}

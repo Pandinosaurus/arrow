@@ -93,7 +93,7 @@ data will be as quick as possible
 
 Saving and loading back data in arrow is usually done through
 :ref:`Parquet <parquet>`, :ref:`IPC format <ipc>` (:ref:`feather`), 
-:ref:`CSV <csv>` or :ref:`Line-Delimited JSON <json>` formats.
+:ref:`CSV <py-csv>` or :ref:`Line-Delimited JSON <json>` formats.
 
 Performing Computations
 -----------------------
@@ -148,8 +148,8 @@ and will lazily load chunks of data only when iterating over them
 For further details on how to work with big datasets, how to filter them,
 how to project them, etc., refer to :ref:`dataset` documentation.
 
-Continuining from here
-----------------------
+Continuing from here
+--------------------
 
 For digging further into Arrow, you might want to read the 
 :doc:`PyArrow Documentation <./index>` itself or the 

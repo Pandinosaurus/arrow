@@ -93,9 +93,6 @@ class CommentBot:
         self.github = github.Github(token)
 
     def parse_command(self, payload):
-        # only allow users of apache org to submit commands, for more see
-        # https://developer.github.com/v4/enum/commentauthorassociation/
-        allowed_roles = {'OWNER', 'MEMBER', 'CONTRIBUTOR'}
         mention = '@{}'.format(self.name)
         comment = payload['comment']
 
@@ -103,10 +100,6 @@ class CommentBot:
             raise EventError("Don't respond to itself")
         elif payload['action'] not in {'created', 'edited'}:
             raise EventError("Don't respond to comment deletion")
-        elif comment['author_association'] not in allowed_roles:
-            raise EventError(
-                "Don't respond to comments from non-authorized users"
-            )
         elif not comment['body'].lstrip().startswith(mention):
             raise EventError("The bot is not mentioned")
 
@@ -146,13 +139,28 @@ class CommentBot:
 
         comment = pull.get_issue_comment(payload['comment']['id'])
         try:
+            # Only allow users of apache org to submit commands, for more see
+            # https://developer.github.com/v4/enum/commentauthorassociation/
+            # Checking  privileges here enables the bot to respond
+            # without relying on the handler.
+            allowed_roles = {'OWNER', 'MEMBER', 'CONTRIBUTOR', 'COLLABORATOR'}
+            if payload['comment']['author_association'] not in allowed_roles:
+                raise EventError(
+                    "Only contributors can submit requests to this bot. "
+                    "Please ask someone from the community for help with "
+                    "getting the first commit in."
+                )
             self.handler(command, issue=issue, pull_request=pull,
                          comment=comment)
-        except CommandError as e:
-            logger.error(e)
-            pull.create_issue_comment("```\n{}\n```".format(e.message))
         except Exception as e:
             logger.exception(e)
+            url = "{server}/{repo}/actions/runs/{run_id}".format(
+                server=os.environ["GITHUB_SERVER_URL"],
+                repo=os.environ["GITHUB_REPOSITORY"],
+                run_id=os.environ["GITHUB_RUN_ID"],
+            )
+            pull.create_issue_comment(
+                f"```\n{e}\nThe Archery job run can be found at: {url}\n```")
             comment.create_reaction('-1')
         else:
             comment.create_reaction('+1')
@@ -224,8 +232,10 @@ def _clone_arrow_and_crossbow(dest, crossbow_repo, pull_request):
               help='Additional task parameters for rendering the CI templates')
 @click.option('--arrow-version', '-v', default=None,
               help='Set target version explicitly.')
+@click.option('--wait', default=60,
+              help='Wait the specified seconds before generating a report.')
 @click.pass_obj
-def submit(obj, tasks, groups, params, arrow_version):
+def submit(obj, tasks, groups, params, arrow_version, wait):
     """
     Submit crossbow testing tasks.
 
@@ -251,17 +261,19 @@ def submit(obj, tasks, groups, params, arrow_version):
 
         # parse additional job parameters
         params = dict([p.split("=") for p in params])
+        params['pr_number'] = pull_request.number
 
         # instantiate the job object
         job = Job.from_config(config=config, target=target, tasks=tasks,
                               groups=groups, params=params)
 
         # add the job to the crossbow queue and push to the remote repository
-        queue.put(job, prefix="actions")
+        queue.put(job, prefix="actions", increment_job_id=False)
         queue.push()
 
         # render the response comment's content
-        report = CommentReport(job, crossbow_repo=crossbow_repo)
+        report = CommentReport(job, crossbow_repo=crossbow_repo,
+                               wait_for_task=wait)
 
         # send the response
         pull_request.create_issue_comment(report.show())

@@ -79,7 +79,7 @@ before_script:
 
   # Build createrepo_c from source.
   # We can remove them when we can install createrepo_c package
-  - git clone --depth 1 https://github.com/rpm-software-management/createrepo_c.git
+  - git clone --depth 1 --branch 0.20.1 https://github.com/rpm-software-management/createrepo_c.git
   - pushd createrepo_c
   - |
       /usr/bin/cmake \
@@ -109,7 +109,7 @@ script:
   - popd
   - pushd apache-arrow-release/yum
   - |
-      for target in almalinux-* centos-*; do
+      for target in almalinux-* amazon-linux-* centos-*; do
         cp -a ${target} ${target}-aarch64
       done
   - popd
@@ -120,7 +120,6 @@ script:
         BUILD_DIR=build \
         DEB_BUILD_OPTIONS=parallel=2 \
         RPM_BUILD_NCPUS=2
-  - sudo rm -rf */*/build
   - popd
   # Push Docker image
   - pushd arrow/dev/tasks/linux-packages
@@ -141,7 +140,17 @@ script:
         gpg --full-generate-key --batch
   - |
       GPG_KEY_ID=$(gpg --list-keys --with-colon test@example.com | grep fpr | cut -d: -f10)
-  - gpg --export --armor test@example.com > arrow/dev/tasks/linux-packages/KEYS
+  - |
+      case "{{ target }}" in
+        almalinux-*|amazon-linux-*|centos-*)
+          repositories_dir=arrow/dev/tasks/linux-packages/apache-arrow-release/yum/repositories
+          rpm2cpio ${repositories_dir}/*/*/*/Packages/apache-arrow-release-*.rpm | \
+            cpio -id
+          mv etc/pki/rpm-gpg/RPM-GPG-KEY-Apache-Arrow \
+            arrow/dev/tasks/linux-packages/KEYS
+          ;;
+      esac
+  - gpg --export --armor test@example.com >> arrow/dev/tasks/linux-packages/KEYS
   - pushd arrow/dev/tasks/linux-packages
   - |
       rake --trace {{ task_namespace }}:test \
@@ -151,5 +160,5 @@ script:
   - popd
 
 after_success:
-  {% set patterns = upload_extensions | format_all("arrow/dev/tasks/linux-packages/**/*{}") %}
+  {% set patterns = upload_extensions | format_all("arrow/dev/tasks/linux-packages/*/*/repositories/**/*{}") %}
   {{ macros.travis_upload_releases(patterns) }}

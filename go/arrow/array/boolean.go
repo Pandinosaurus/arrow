@@ -20,9 +20,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/apache/arrow/go/v7/arrow"
-	"github.com/apache/arrow/go/v7/arrow/bitutil"
-	"github.com/apache/arrow/go/v7/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/bitutil"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/goccy/go-json"
 )
 
@@ -36,13 +36,15 @@ type Boolean struct {
 // The nullBitmap buffer can be nil of there are no null values.
 // If nulls is not known, use UnknownNullCount to calculate the value of NullN at runtime from the nullBitmap buffer.
 func NewBoolean(length int, data *memory.Buffer, nullBitmap *memory.Buffer, nulls int) *Boolean {
-	return NewBooleanData(NewData(arrow.FixedWidthTypes.Boolean, length, []*memory.Buffer{nullBitmap, data}, nil, nulls, 0))
+	arrdata := NewData(arrow.FixedWidthTypes.Boolean, length, []*memory.Buffer{nullBitmap, data}, nil, nulls, 0)
+	defer arrdata.Release()
+	return NewBooleanData(arrdata)
 }
 
-func NewBooleanData(data *Data) *Boolean {
+func NewBooleanData(data arrow.ArrayData) *Boolean {
 	a := &Boolean{}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 
@@ -111,5 +113,5 @@ func arrayEqualBoolean(left, right *Boolean) bool {
 }
 
 var (
-	_ Interface = (*Boolean)(nil)
+	_ arrow.Array = (*Boolean)(nil)
 )

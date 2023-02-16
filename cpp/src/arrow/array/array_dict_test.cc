@@ -31,8 +31,8 @@
 #include "arrow/chunked_array.h"
 #include "arrow/status.h"
 #include "arrow/table.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/extension_type.h"
-#include "arrow/testing/gtest_common.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/util.h"
 #include "arrow/type.h"
@@ -69,7 +69,7 @@ std::shared_ptr<Array> DictExtensionFromJSON(const std::shared_ptr<DataType>& ty
 // Dictionary tests
 
 template <typename Type>
-class TestDictionaryBuilder : public TestBuilder {};
+class TestDictionaryBuilder : public ::testing::Test {};
 
 typedef ::testing::Types<Int8Type, UInt8Type, Int16Type, UInt16Type, Int32Type,
                          UInt32Type, Int64Type, UInt64Type, FloatType, DoubleType>
@@ -155,6 +155,18 @@ TYPED_TEST(TestDictionaryBuilder, MakeBuilder) {
   DictionaryArray expected(dict_type, int_array, dict_array);
 
   AssertArraysEqual(expected, *result);
+}
+
+TYPED_TEST(TestDictionaryBuilder, Empty) {
+  DictionaryBuilder<TypeParam> dictionary_builder;
+  ASSERT_OK_AND_ASSIGN(std::shared_ptr<Array> empty_arr, dictionary_builder.Finish());
+  std::shared_ptr<DictionaryArray> empty_dict_arr =
+      checked_pointer_cast<DictionaryArray>(empty_arr);
+  // Ensure that the indices value buffer is initialized
+  ASSERT_NE(nullptr, empty_dict_arr->data()->buffers[1]);
+  // Ensure that the dictionary's value buffer is initialized
+  ASSERT_NE(nullptr, empty_dict_arr->dictionary());
+  ASSERT_NE(nullptr, empty_dict_arr->dictionary()->data()->buffers[1]);
 }
 
 TYPED_TEST(TestDictionaryBuilder, ArrayConversion) {
@@ -711,7 +723,7 @@ TEST(TestFixedSizeBinaryDictionaryBuilder, ArrayInit) {
   // Build the dictionary Array
   auto value_type = fixed_size_binary(4);
   auto dict_array = ArrayFromJSON(value_type, R"(["abcd", "wxyz"])");
-  util::string_view test = "abcd", test2 = "wxyz";
+  std::string_view test = "abcd", test2 = "wxyz";
   DictionaryBuilder<FixedSizeBinaryType> builder(dict_array);
   ASSERT_OK(builder.Append(test));
   ASSERT_OK(builder.Append(test2));
@@ -735,7 +747,7 @@ TEST(TestFixedSizeBinaryDictionaryBuilder, MakeBuilder) {
   std::unique_ptr<ArrayBuilder> boxed_builder;
   ASSERT_OK(MakeBuilder(default_memory_pool(), dict_type, &boxed_builder));
   auto& builder = checked_cast<DictionaryBuilder<FixedSizeBinaryType>&>(*boxed_builder);
-  util::string_view test = "abcd", test2 = "wxyz";
+  std::string_view test = "abcd", test2 = "wxyz";
   ASSERT_OK(builder.Append(test));
   ASSERT_OK(builder.Append(test2));
   ASSERT_OK(builder.Append(test));
@@ -1016,7 +1028,7 @@ void AssertIndexByteWidth(const std::shared_ptr<DataType>& value_type =
 typedef ::testing::Types<Int8Type, Int16Type, Int32Type, Int64Type> IndexTypes;
 
 template <typename Type>
-class TestDictionaryBuilderIndexByteWidth : public TestBuilder {};
+class TestDictionaryBuilderIndexByteWidth : public ::testing::Test {};
 
 TYPED_TEST_SUITE(TestDictionaryBuilderIndexByteWidth, IndexTypes);
 
@@ -1141,7 +1153,7 @@ TEST(TestDictionary, FromArrays) {
     if (checked_cast<const IntegerType&>(*index_ty).is_signed()) {
       // Invalid index is masked by null, so it's OK
       auto indices3 = ArrayFromJSON(index_ty, "[1, 2, -1, null, 2, 0]");
-      BitUtil::ClearBit(indices3->data()->buffers[0]->mutable_data(), 2);
+      bit_util::ClearBit(indices3->data()->buffers[0]->mutable_data(), 2);
       ASSERT_OK_AND_ASSIGN(auto arr3,
                            DictionaryArray::FromArrays(dict_type, indices3, dict));
     }
@@ -1317,12 +1329,12 @@ TEST(TestDictionary, ListOfDictionary) {
 
   ASSERT_OK(list_builder->Append());
   std::vector<std::string> expected;
-  for (char a : util::string_view("abc")) {
-    for (char d : util::string_view("def")) {
-      for (char g : util::string_view("ghi")) {
-        for (char j : util::string_view("jkl")) {
-          for (char m : util::string_view("mno")) {
-            for (char p : util::string_view("pqr")) {
+  for (char a : std::string_view("abc")) {
+    for (char d : std::string_view("def")) {
+      for (char g : std::string_view("ghi")) {
+        for (char j : std::string_view("jkl")) {
+          for (char m : std::string_view("mno")) {
+            for (char p : std::string_view("pqr")) {
               if ((static_cast<int>(a) + d + g + j + m + p) % 16 == 0) {
                 ASSERT_OK(list_builder->Append());
               }

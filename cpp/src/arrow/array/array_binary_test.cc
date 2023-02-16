@@ -19,6 +19,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gmock/gmock-matchers.h>
@@ -29,15 +30,15 @@
 #include "arrow/buffer.h"
 #include "arrow/memory_pool.h"
 #include "arrow/status.h"
-#include "arrow/testing/gtest_common.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/gtest_util.h"
+#include "arrow/testing/util.h"
 #include "arrow/type.h"
 #include "arrow/type_traits.h"
 #include "arrow/util/bit_util.h"
 #include "arrow/util/bitmap_builders.h"
 #include "arrow/util/checked_cast.h"
-#include "arrow/util/string_view.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_data_inline.h"
 
 namespace arrow {
 
@@ -62,7 +63,7 @@ void CheckStringArray(const ArrayType& array, const std::vector<std::string>& st
       auto view = array.GetView(i);
       ASSERT_EQ(value_pos, array.value_offset(i));
       ASSERT_EQ(strings[j].size(), view.size());
-      ASSERT_EQ(util::string_view(strings[j]), view);
+      ASSERT_EQ(std::string_view(strings[j]), view);
       value_pos += static_cast<int32_t>(view.size());
     } else {
       ASSERT_TRUE(array.IsNull(i));
@@ -104,6 +105,18 @@ class TestStringArray : public ::testing::Test {
     ASSERT_OK(strings_->ValidateFull());
     TestInitialized(*strings_);
     AssertZeroPadded(*strings_);
+  }
+
+  void TestArrayIndexOperator() {
+    const auto& arr = *strings_;
+    for (int64_t i = 0; i < arr.length(); ++i) {
+      if (valid_bytes_[i]) {
+        ASSERT_TRUE(arr[i].has_value());
+        ASSERT_EQ(expected_[i], arr[i].value());
+      } else {
+        ASSERT_FALSE(arr[i].has_value());
+      }
+    }
   }
 
   void TestArrayCtors() {
@@ -243,7 +256,7 @@ class TestStringArray : public ::testing::Test {
   }
 
   Status ValidateFull(int64_t length, std::vector<offset_type> offsets,
-                      util::string_view data, int64_t offset = 0) {
+                      std::string_view data, int64_t offset = 0) {
     ArrayType arr(length, Buffer::Wrap(offsets), std::make_shared<Buffer>(data),
                   /*null_bitmap=*/nullptr, /*null_count=*/0, offset);
     return arr.ValidateFull();
@@ -328,6 +341,8 @@ TYPED_TEST_SUITE(TestStringArray, BaseBinaryArrowTypes);
 
 TYPED_TEST(TestStringArray, TestArrayBasics) { this->TestArrayBasics(); }
 
+TYPED_TEST(TestStringArray, TestArrayIndexOperator) { this->TestArrayIndexOperator(); }
+
 TYPED_TEST(TestStringArray, TestArrayCtors) { this->TestArrayCtors(); }
 
 TYPED_TEST(TestStringArray, TestType) { this->TestType(); }
@@ -358,7 +373,7 @@ class TestUTF8Array : public ::testing::Test {
   using ArrayType = typename TypeTraits<TypeClass>::ArrayType;
 
   Status ValidateUTF8(int64_t length, std::vector<offset_type> offsets,
-                      util::string_view data, int64_t offset = 0) {
+                      std::string_view data, int64_t offset = 0) {
     ArrayType arr(length, Buffer::Wrap(offsets), std::make_shared<Buffer>(data),
                   /*null_bitmap=*/nullptr, /*null_count=*/0, offset);
     return arr.ValidateUTF8();
@@ -389,17 +404,14 @@ TYPED_TEST(TestUTF8Array, TestValidateUTF8) { this->TestValidateUTF8(); }
 // String builder tests
 
 template <typename T>
-class TestStringBuilder : public TestBuilder {
+class TestStringBuilder : public ::testing::Test {
  public:
   using TypeClass = T;
   using offset_type = typename TypeClass::offset_type;
   using ArrayType = typename TypeTraits<TypeClass>::ArrayType;
   using BuilderType = typename TypeTraits<TypeClass>::BuilderType;
 
-  void SetUp() {
-    TestBuilder::SetUp();
-    builder_.reset(new BuilderType(pool_));
-  }
+  void SetUp() { builder_.reset(new BuilderType(pool_)); }
 
   void Done() {
     std::shared_ptr<Array> out;
@@ -595,7 +607,7 @@ class TestStringBuilder : public TestBuilder {
     int reps = 15;
     int64_t length = 0;
     int64_t capacity = 1000;
-    int64_t expected_capacity = BitUtil::RoundUpToMultipleOf64(capacity);
+    int64_t expected_capacity = bit_util::RoundUpToMultipleOf64(capacity);
 
     ASSERT_OK(builder_->ReserveData(capacity));
 
@@ -613,7 +625,7 @@ class TestStringBuilder : public TestBuilder {
     }
 
     int extra_capacity = 500;
-    expected_capacity = BitUtil::RoundUpToMultipleOf64(length + extra_capacity);
+    expected_capacity = bit_util::RoundUpToMultipleOf64(length + extra_capacity);
 
     ASSERT_OK(builder_->ReserveData(extra_capacity));
 
@@ -657,6 +669,7 @@ class TestStringBuilder : public TestBuilder {
   }
 
  protected:
+  MemoryPool* pool_ = default_memory_pool();
   std::unique_ptr<BuilderType> builder_;
   std::shared_ptr<ArrayType> result_;
 };
@@ -846,7 +859,7 @@ TEST(TestChunkedStringBuilder, BasicOperation) {
 }
 
 // ----------------------------------------------------------------------
-// ArrayDataVisitor<binary-like> tests
+// ArraySpanVisitor<binary-like> tests
 
 struct BinaryAppender {
   Status VisitNull() {
@@ -854,12 +867,12 @@ struct BinaryAppender {
     return Status::OK();
   }
 
-  Status VisitValue(util::string_view v) {
+  Status VisitValue(std::string_view v) {
     data.push_back(v);
     return Status::OK();
   }
 
-  std::vector<util::string_view> data;
+  std::vector<std::string_view> data;
 };
 
 template <typename T>
@@ -872,7 +885,7 @@ class TestBaseBinaryDataVisitor : public ::testing::Test {
   void TestBasics() {
     auto array = ArrayFromJSON(type_, R"(["foo", null, "bar"])");
     BinaryAppender appender;
-    ArrayDataVisitor<TypeClass> visitor;
+    ArraySpanVisitor<TypeClass> visitor;
     ASSERT_OK(visitor.Visit(*array->data(), &appender));
     ASSERT_THAT(appender.data, ::testing::ElementsAreArray({"foo", "(null)", "bar"}));
     ARROW_UNUSED(visitor);  // Workaround weird MSVC warning
@@ -881,7 +894,7 @@ class TestBaseBinaryDataVisitor : public ::testing::Test {
   void TestSliced() {
     auto array = ArrayFromJSON(type_, R"(["ab", null, "cd", "ef"])")->Slice(1, 2);
     BinaryAppender appender;
-    ArrayDataVisitor<TypeClass> visitor;
+    ArraySpanVisitor<TypeClass> visitor;
     ASSERT_OK(visitor.Visit(*array->data(), &appender));
     ASSERT_THAT(appender.data, ::testing::ElementsAreArray({"(null)", "cd"}));
     ARROW_UNUSED(visitor);  // Workaround weird MSVC warning

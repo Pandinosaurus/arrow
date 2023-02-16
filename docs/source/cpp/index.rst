@@ -22,11 +22,6 @@ C++ Implementation
    :maxdepth: 2
 
    getting_started
+   user_guide
    Examples <examples/index>
    api
-
-.. TODO add "topics" chapter
-.. - nested arrays
-.. - dictionary encoding
-
-.. TODO add "building" or "development" chapter

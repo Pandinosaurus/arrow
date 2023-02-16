@@ -97,6 +97,10 @@ cdef api object pyarrow_wrap_data_type(
         out = SparseUnionType.__new__(SparseUnionType)
     elif type.get().id() == _Type_DENSE_UNION:
         out = DenseUnionType.__new__(DenseUnionType)
+    elif type.get().id() == _Type_TIME32:
+        out = Time32Type.__new__(Time32Type)
+    elif type.get().id() == _Type_TIME64:
+        out = Time64Type.__new__(Time64Type)
     elif type.get().id() == _Type_TIMESTAMP:
         out = TimestampType.__new__(TimestampType)
     elif type.get().id() == _Type_DURATION:
@@ -257,7 +261,7 @@ cdef api object pyarrow_wrap_scalar(const shared_ptr[CScalar]& sp_scalar):
     if data_type.id() not in _scalar_classes:
         raise ValueError('Scalar type not supported')
 
-    klass = _scalar_classes[data_type.id()]
+    klass = get_scalar_class_from_type(sp_scalar.get().type)
 
     cdef Scalar scalar = klass.__new__(klass)
     scalar.init(sp_scalar)

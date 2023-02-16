@@ -19,11 +19,14 @@
 
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "arrow/buffer.h"
+#include "arrow/compute/exec/expression.h"
+#include "arrow/compute/exec/options.h"
 #include "arrow/compute/type_fwd.h"
 #include "arrow/memory_pool.h"
 #include "arrow/result.h"
@@ -32,16 +35,25 @@
 #include "arrow/util/cpu_info.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/mutex.h"
-#include "arrow/util/optional.h"
 #include "arrow/util/thread_pool.h"
+#include "arrow/util/type_fwd.h"
 
 #if defined(__clang__) || defined(__GNUC__)
 #define BYTESWAP(x) __builtin_bswap64(x)
-#define ROTL(x, n) (((x) << (n)) | ((x) >> (32 - (n))))
+#define ROTL(x, n) (((x) << (n)) | ((x) >> ((-n) & 31)))
+#define ROTL64(x, n) (((x) << (n)) | ((x) >> ((-n) & 63)))
+#define PREFETCH(ptr) __builtin_prefetch((ptr), 0 /* rw==read */, 3 /* locality */)
 #elif defined(_MSC_VER)
 #include <intrin.h>
 #define BYTESWAP(x) _byteswap_uint64(x)
 #define ROTL(x, n) _rotl((x), (n))
+#define ROTL64(x, n) _rotl64((x), (n))
+#if defined(_M_X64) || defined(_M_I86)
+#include <mmintrin.h>  // https://msdn.microsoft.com/fr-fr/library/84szxsww(v=vs.90).aspx
+#define PREFETCH(ptr) _mm_prefetch((const char*)(ptr), _MM_HINT_T0)
+#else
+#define PREFETCH(ptr) (void)(ptr) /* disabled */
+#endif
 #endif
 
 namespace arrow {
@@ -60,6 +72,18 @@ inline void CheckAlignment(const void* ptr) {
 //
 using int64_for_gather_t = const long long int;  // NOLINT runtime-int
 
+// All MiniBatch... classes use TempVectorStack for vector allocations and can
+// only work with vectors up to 1024 elements.
+//
+// They should only be allocated on the stack to guarantee the right sequence
+// of allocation and deallocation of vectors from TempVectorStack.
+//
+class MiniBatch {
+ public:
+  static constexpr int kLogMiniBatchLength = 10;
+  static constexpr int kMiniBatchLength = 1 << kLogMiniBatchLength;
+};
+
 /// Storage used to allocate temporary vectors of a batch size.
 /// Temporary vectors should resemble allocating temporary variables on the stack
 /// but in the context of vectorized processing where we need to store a vector of
@@ -72,7 +96,7 @@ class TempVectorStack {
   Status Init(MemoryPool* pool, int64_t size) {
     num_vectors_ = 0;
     top_ = 0;
-    buffer_size_ = size;
+    buffer_size_ = PaddedAllocationSize(size) + kPadding + 2 * sizeof(uint64_t);
     ARROW_ASSIGN_OR_RAISE(auto buffer, AllocateResizableBuffer(size, pool));
     // Ensure later operations don't accidentally read uninitialized memory.
     std::memset(buffer->mutable_data(), 0xFF, size);
@@ -89,7 +113,7 @@ class TempVectorStack {
     // using SIMD when number of vector elements is not divisible
     // by the number of SIMD lanes.
     //
-    return ::arrow::BitUtil::RoundUp(num_bytes, sizeof(int64_t)) + kPadding;
+    return ::arrow::bit_util::RoundUp(num_bytes, sizeof(int64_t)) + kPadding;
   }
   void alloc(uint32_t num_bytes, uint8_t** data, int* id) {
     int64_t old_top = top_;
@@ -144,7 +168,7 @@ class TempVectorHolder {
   uint32_t num_elements_;
 };
 
-class BitUtil {
+class bit_util {
  public:
   static void bits_to_indexes(int bit_to_search, int64_t hardware_flags,
                               const int num_bits, const uint8_t* bits, int* num_indexes,
@@ -173,6 +197,8 @@ class BitUtil {
                                  uint32_t num_bytes);
 
  private:
+  inline static uint64_t SafeLoadUpTo8Bytes(const uint8_t* bytes, int num_bytes);
+  inline static void SafeStoreUpTo8Bytes(uint8_t* bytes, int num_bytes, uint64_t value);
   inline static void bits_to_indexes_helper(uint64_t word, uint16_t base_index,
                                             int* num_indexes, uint16_t* indexes);
   inline static void bits_filter_indexes_helper(uint64_t word,
@@ -216,13 +242,13 @@ ARROW_EXPORT
 Result<std::shared_ptr<Table>> TableFromExecBatches(
     const std::shared_ptr<Schema>& schema, const std::vector<ExecBatch>& exec_batches);
 
-class AtomicCounter {
+class ARROW_EXPORT AtomicCounter {
  public:
   AtomicCounter() = default;
 
   int count() const { return count_.load(); }
 
-  util::optional<int> total() const {
+  std::optional<int> total() const {
     int total = total_.load();
     if (total == -1) return {};
     return total;
@@ -260,7 +286,7 @@ class AtomicCounter {
   std::atomic<bool> complete_{false};
 };
 
-class ThreadIndexer {
+class ARROW_EXPORT ThreadIndexer {
  public:
   size_t operator()();
 
@@ -271,6 +297,171 @@ class ThreadIndexer {
 
   util::Mutex mutex_;
   std::unordered_map<std::thread::id, size_t> id_to_index_;
+};
+
+// Helper class to calculate the modified number of rows to process using SIMD.
+//
+// Some array elements at the end will be skipped in order to avoid buffer
+// overrun, when doing memory loads and stores using larger word size than a
+// single array element.
+//
+class TailSkipForSIMD {
+ public:
+  static int64_t FixBitAccess(int num_bytes_accessed_together, int64_t num_rows,
+                              int bit_offset) {
+    int64_t num_bytes = bit_util::BytesForBits(num_rows + bit_offset);
+    int64_t num_bytes_safe =
+        std::max(static_cast<int64_t>(0LL), num_bytes - num_bytes_accessed_together + 1);
+    int64_t num_rows_safe =
+        std::max(static_cast<int64_t>(0LL), 8 * num_bytes_safe - bit_offset);
+    return std::min(num_rows_safe, num_rows);
+  }
+  static int64_t FixBinaryAccess(int num_bytes_accessed_together, int64_t num_rows,
+                                 int64_t length) {
+    int64_t num_rows_to_skip = bit_util::CeilDiv(length, num_bytes_accessed_together);
+    int64_t num_rows_safe =
+        std::max(static_cast<int64_t>(0LL), num_rows - num_rows_to_skip);
+    return num_rows_safe;
+  }
+  static int64_t FixVarBinaryAccess(int num_bytes_accessed_together, int64_t num_rows,
+                                    const uint32_t* offsets) {
+    // Do not process rows that could read past the end of the buffer using N
+    // byte loads/stores.
+    //
+    int64_t num_rows_safe = num_rows;
+    while (num_rows_safe > 0 &&
+           offsets[num_rows_safe] + num_bytes_accessed_together > offsets[num_rows]) {
+      --num_rows_safe;
+    }
+    return num_rows_safe;
+  }
+  static int FixSelection(int64_t num_rows_safe, int num_selected,
+                          const uint16_t* selection) {
+    int num_selected_safe = num_selected;
+    while (num_selected_safe > 0 && selection[num_selected_safe - 1] >= num_rows_safe) {
+      --num_selected_safe;
+    }
+    return num_selected_safe;
+  }
+};
+
+/// \brief A consumer that collects results into an in-memory table
+struct ARROW_EXPORT TableSinkNodeConsumer : public SinkNodeConsumer {
+ public:
+  TableSinkNodeConsumer(std::shared_ptr<Table>* out, MemoryPool* pool)
+      : out_(out), pool_(pool) {}
+  Status Init(const std::shared_ptr<Schema>& schema,
+              BackpressureControl* backpressure_control, ExecPlan* plan) override;
+  Status Consume(ExecBatch batch) override;
+  Future<> Finish() override;
+
+ private:
+  std::shared_ptr<Table>* out_;
+  MemoryPool* pool_;
+  std::shared_ptr<Schema> schema_;
+  std::vector<std::shared_ptr<RecordBatch>> batches_;
+  util::Mutex consume_mutex_;
+};
+
+class ARROW_EXPORT NullSinkNodeConsumer : public SinkNodeConsumer {
+ public:
+  Status Init(const std::shared_ptr<Schema>&, BackpressureControl*,
+              ExecPlan* plan) override {
+    return Status::OK();
+  }
+  Status Consume(ExecBatch exec_batch) override { return Status::OK(); }
+  Future<> Finish() override { return Status::OK(); }
+
+ public:
+  static std::shared_ptr<NullSinkNodeConsumer> Make() {
+    return std::make_shared<NullSinkNodeConsumer>();
+  }
+};
+
+/// Modify an Expression with pre-order and post-order visitation.
+/// `pre` will be invoked on each Expression. `pre` will visit Calls before their
+/// arguments, `post_call` will visit Calls (and no other Expressions) after their
+/// arguments. Visitors should return the Identical expression to indicate no change; this
+/// will prevent unnecessary construction in the common case where a modification is not
+/// possible/necessary/...
+///
+/// If an argument was modified, `post_call` visits a reconstructed Call with the modified
+/// arguments but also receives a pointer to the unmodified Expression as a second
+/// argument. If no arguments were modified the unmodified Expression* will be nullptr.
+template <typename PreVisit, typename PostVisitCall>
+Result<Expression> ModifyExpression(Expression expr, const PreVisit& pre,
+                                    const PostVisitCall& post_call) {
+  ARROW_ASSIGN_OR_RAISE(expr, Result<Expression>(pre(std::move(expr))));
+
+  auto call = expr.call();
+  if (!call) return expr;
+
+  bool at_least_one_modified = false;
+  std::vector<Expression> modified_arguments;
+
+  for (size_t i = 0; i < call->arguments.size(); ++i) {
+    ARROW_ASSIGN_OR_RAISE(auto modified_argument,
+                          ModifyExpression(call->arguments[i], pre, post_call));
+
+    if (Identical(modified_argument, call->arguments[i])) {
+      continue;
+    }
+
+    if (!at_least_one_modified) {
+      modified_arguments = call->arguments;
+      at_least_one_modified = true;
+    }
+
+    modified_arguments[i] = std::move(modified_argument);
+  }
+
+  if (at_least_one_modified) {
+    // reconstruct the call expression with the modified arguments
+    auto modified_call = *call;
+    modified_call.arguments = std::move(modified_arguments);
+    return post_call(Expression(std::move(modified_call)), &expr);
+  }
+
+  return post_call(std::move(expr), NULLPTR);
+}
+
+/// CRTP helper for tracing helper functions
+
+class ARROW_EXPORT TracedNode {
+ public:
+  // All nodes should call TraceStartProducing or NoteStartProducing exactly once
+  // Most nodes will be fine with a call to NoteStartProducing since the StartProducing
+  // call is usually fairly cheap and simply schedules tasks to fetch the actual data.
+
+  explicit TracedNode(ExecNode* node) : node_(node) {}
+
+  // Create a span to record the StartProducing work
+  [[nodiscard]] ::arrow::internal::tracing::Scope TraceStartProducing(
+      std::string extra_details) const;
+
+  // Record a call to StartProducing without creating with a span
+  void NoteStartProducing(std::string extra_details) const;
+
+  // All nodes should call TraceInputReceived for each batch they receive.  This call
+  // should track the time spent processing the batch.  NoteInputReceived is available
+  // but usually won't be used unless a node is simply adding batches to a trivial queue.
+
+  // Create a span to record the InputReceived work
+  [[nodiscard]] ::arrow::internal::tracing::Scope TraceInputReceived(
+      const ExecBatch& batch) const;
+
+  // Record a call to InputReceived without creating with a span
+  void NoteInputReceived(const ExecBatch& batch) const;
+
+  // Create a span to record any "finish" work.  This should NOT be called as part of
+  // InputFinished and many nodes may not need to call this at all.  This should be used
+  // when a node has some extra work that has to be done once it has received all of its
+  // data.  For example, an aggregation node calculating aggregations.  This will
+  // typically be called as a result of InputFinished OR InputReceived.
+  [[nodiscard]] ::arrow::internal::tracing::Scope TraceFinish() const;
+
+ private:
+  ExecNode* node_;
 };
 
 }  // namespace compute

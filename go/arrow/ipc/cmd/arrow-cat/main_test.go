@@ -24,18 +24,14 @@ import (
 	"os"
 	"testing"
 
-	"github.com/apache/arrow/go/v7/arrow/array"
-	"github.com/apache/arrow/go/v7/arrow/internal/arrdata"
-	"github.com/apache/arrow/go/v7/arrow/ipc"
-	"github.com/apache/arrow/go/v7/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/internal/arrdata"
+	"github.com/apache/arrow/go/v12/arrow/ipc"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 )
 
 func TestCatStream(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "go-arrow-cat-stream-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	for _, tc := range []struct {
 		name string
@@ -229,11 +225,7 @@ record 3...
 }
 
 func TestCatFile(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "go-arrow-cat-file-")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	for _, tc := range []struct {
 		name   string
@@ -534,7 +526,7 @@ record 3/3...
 
 				var w interface {
 					io.Closer
-					Write(array.Record) error
+					Write(arrow.Record) error
 				}
 
 				switch {

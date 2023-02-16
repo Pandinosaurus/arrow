@@ -91,6 +91,7 @@ Pros of the IPC format vs. the data interface:
   (such as integrity checks, compression...).
 * Does not require explicit C data access.
 
+
 Data type description -- format strings
 =======================================
 
@@ -255,6 +256,9 @@ are available under the Apache License 2.0.
 
 .. code-block:: c
 
+   #ifndef ARROW_C_DATA_INTERFACE
+   #define ARROW_C_DATA_INTERFACE
+
    #define ARROW_FLAG_DICTIONARY_ORDERED 1
    #define ARROW_FLAG_NULLABLE 2
    #define ARROW_FLAG_MAP_KEYS_SORTED 4
@@ -291,6 +295,15 @@ are available under the Apache License 2.0.
      // Opaque producer-specific data
      void* private_data;
    };
+
+   #endif  // ARROW_C_DATA_INTERFACE
+
+.. note::
+   The canonical guard ``ARROW_C_DATA_INTERFACE`` is meant to avoid
+   duplicate definitions if two projects copy the C data interface
+   definitions in their own headers, and a third-party project
+   includes from these two projects.  It is therefore important that
+   this guard is kept exactly as-is when these definitions are copied.
 
 The ArrowSchema structure
 -------------------------
@@ -451,8 +464,10 @@ It has the following fields:
    buffers be aligned at least according to the type of primitive data that
    they contain. Consumers MAY decide not to support unaligned memory.
 
-   The pointer to the null bitmap buffer, if the data type specifies one,
-   MAY be NULL only if :c:member:`ArrowArray.null_count` is 0.
+   The buffer pointers MAY be null only in two situations:
+
+   1. for the null bitmap buffer, if :c:member:`ArrowArray.null_count` is 0;
+   2. for any buffer, if the size in bytes of the corresponding buffer would be 0.
 
    Buffers of children arrays are not included.
 
@@ -511,11 +526,14 @@ For extension arrays, the :c:member:`ArrowSchema.format` string encodes the
 metadata key ``ARROW:extension:name``  encodes the extension type name,
 and the metadata key ``ARROW:extension:metadata`` encodes the
 implementation-specific serialization of the extension type (for
-parameterized extension types).  The base64 encoding of metadata values
-ensures that any possible serialization is representable.
+parameterized extension types).
 
 The ``ArrowArray`` structure exported from an extension array simply points
 to the storage data of the extension array.
+
+
+Semantics
+=========
 
 Memory management
 -----------------
@@ -590,7 +608,7 @@ TODO area must be filled with producer-specific deallocation code:
 
    static void ReleaseExportedArray(struct ArrowArray* array) {
      // This should not be called on already released array
-     assert(array->format != NULL);
+     assert(array->release != NULL);
 
      // Release children
      for (int64_t i = 0; i < array->n_children; ++i) {
@@ -652,8 +670,18 @@ while releasing the others.
 Record batches
 --------------
 
-A record batch can be trivially considered as an equivalent struct array with
-additional top-level metadata.
+A record batch can be trivially considered as an equivalent struct array. In
+this case the metadata of the top-level ``ArrowSchema`` can be used for the
+schema-level metadata of the record batch.
+
+Mutability
+----------
+
+Both the producer and the consumer SHOULD consider the exported data
+(that is, the data reachable through the ``buffers`` member of ``ArrowArray``)
+to be immutable, as either party could otherwise see inconsistent data while
+the other is mutating it.
+
 
 Example use case
 ================

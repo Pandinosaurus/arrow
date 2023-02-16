@@ -59,8 +59,14 @@ x-ccache: &ccache
   CCACHE_COMPILERCHECK: content
   CCACHE_COMPRESS: 1
   CCACHE_COMPRESSLEVEL: 6
-  CCACHE_MAXSIZE: 500M
+  CCACHE_MAXSIZE: 1G
   CCACHE_DIR: /ccache
+
+x-sccache: &sccache
+  AWS_ACCESS_KEY_ID:
+  AWS_SECRET_ACCESS_KEY:
+  SCCACHE_BUCKET:
+  SCCACHE_S3_KEY_PREFIX: ${SCCACHE_S3_KEY_PREFIX:-sccache}
 
 # CPU/memory limit presets to pass to Docker.
 #
@@ -86,7 +92,7 @@ x-hierarchy:
   # This section is used by the archery tool to enable building nested images,
   # so it is enough to call:
   #   archery run debian-ruby
-  # instead of a seguence of docker-compose commands:
+  # instead of a sequence of docker-compose commands:
   #   docker-compose build debian-cpp
   #   docker-compose build debian-c-glib
   #   docker-compose build debian-ruby
@@ -95,20 +101,24 @@ x-hierarchy:
   # Each node must be either a string scalar of a list containing the
   # descendant images if any. Archery checks that all node has a corresponding
   # service entry, so any new image/service must be listed here.
+  - almalinux-verify-rc
+  - alpine-linux-cpp
+  - centos-cpp-static
   - conda:
     - conda-cpp:
-      - conda-cpp-hiveserver2
+      - conda-integration
       - conda-cpp-valgrind
       - conda-python:
-        - conda-python-pandas
+        - conda-python-pandas:
+          - conda-python-docs
         - conda-python-dask
         - conda-python-hdfs
-        - conda-python-jpype
         - conda-python-java-integration
-        - conda-python-turbodbc
-        - conda-python-kartothek
+        - conda-python-jpype
         - conda-python-spark
-    - conda-integration
+        - conda-python-substrait
+  - conda-verify-rc
+  - conan
   - debian-cpp:
     - debian-c-glib:
       - debian-ruby
@@ -116,12 +126,14 @@ x-hierarchy:
   - debian-go:
     - debian-go-cgo
     - debian-go-cgo-python
-  - debian-java:
-    - debian-java-jni
+  - debian-java
   - debian-js
   - fedora-cpp:
     - fedora-python
+  - oracle-java
+  - python-sdist
   - ubuntu-cpp:
+    - ubuntu-cpp-static
     - ubuntu-c-glib:
       - ubuntu-ruby
     - ubuntu-lint
@@ -137,16 +149,15 @@ x-hierarchy:
   - ubuntu-cpp-sanitizer
   - ubuntu-cpp-thread-sanitizer
   - ubuntu-r-sanitizer
-  - r-fedora-clang-devel-san:
-    - fedora-r-clang-sanitizer
   - ubuntu-r-valgrind
-  - python-sdist
+  - ubuntu-swift
+  - ubuntu-verify-rc
+  - fedora-r-clang-sanitizer
   - r
   - r-revdepcheck
   # helper services
   - impala
   - postgres
-  - python-wheel-manylinux-2010
   - python-wheel-manylinux-2014:
     - java-jni-manylinux-2014
   - python-wheel-manylinux-test-imports
@@ -155,24 +166,26 @@ x-hierarchy:
   - python-wheel-windows-test
 
 volumes:
+  almalinux-ccache:
+    name: ${ARCH}-almalinux-ccache
+  alpine-linux-ccache:
+    name: ${ARCH}-alpine-linux-ccache
   conda-ccache:
     name: ${ARCH}-conda-ccache
   debian-ccache:
     name: ${ARCH}-debian-${DEBIAN}-ccache
-  ubuntu-ccache:
-    name: ${ARCH}-ubuntu-${UBUNTU}-ccache
-  fedora-ccache:
-    name: ${ARCH}-fedora-${FEDORA}-ccache
   debian-rust:
     name: ${ARCH}-debian-${DEBIAN}-rust
+  fedora-ccache:
+    name: ${ARCH}-fedora-${FEDORA}-ccache
   maven-cache:
     name: maven-cache
-  python-wheel-manylinux2010-ccache:
-    name: python-wheel-manylinux2010-ccache
   python-wheel-manylinux2014-ccache:
     name: python-wheel-manylinux2014-ccache
   python-wheel-windows-clcache:
     name: python-wheel-windows-clcache
+  ubuntu-ccache:
+    name: ${ARCH}-ubuntu-${UBUNTU}-ccache
 
 services:
 
@@ -187,11 +200,41 @@ services:
   #     -e ARROW_TEST_LINKAGE=static \
   #     conda-cpp|debian-cpp|...
 
+  alpine-linux-cpp:
+    # Usage:
+    #   docker-compose build alpine-linux-cpp
+    #   docker-compose run --rm alpine-linux-cpp
+    # Parameters:
+    #   ALPINE_LINUX: 3.16
+    #   ARCH: amd64, arm64v8, ...
+    image: ${REPO}:${ARCH}-alpine-linux-${ALPINE_LINUX}-cpp
+    build:
+      context: .
+      dockerfile: ci/docker/alpine-linux-${ALPINE_LINUX}-cpp.dockerfile
+      cache_from:
+        - ${REPO}:${ARCH}-alpine-linux-${ALPINE_LINUX}-cpp
+      args:
+        arch: ${ARCH}
+    shm_size: &shm-size 2G
+    ulimits: &ulimits
+      core: ${ULIMIT_CORE}
+    environment:
+      <<: *ccache
+      ARROW_ENABLE_TIMING_TESTS:  # inherit
+      ARROW_MIMALLOC: "ON"
+    volumes: &alpine-linux-volumes
+      - .:/arrow:delegated
+      - ${DOCKER_VOLUME_PREFIX}alpine-linux-ccache:/ccache:delegated
+    command: >-
+      /bin/bash -c "
+        /arrow/ci/scripts/cpp_build.sh /arrow /build &&
+        /arrow/ci/scripts/cpp_test.sh /arrow /build"
+
   conda:
     # Base image for conda builds.
     #
     # Usage:
-    #   docker-compose build con
+    #   docker-compose build conda
     #   docker-compose run --rm conda
     # Parameters:
     #   ARCH: amd64, arm32v7
@@ -203,7 +246,6 @@ services:
         - ${REPO}:${ARCH}-conda
       args:
         arch: ${ARCH}
-        prefix: /opt/conda
     volumes:
       - .:/arrow:delegated
 
@@ -225,22 +267,24 @@ services:
       args:
         repo: ${REPO}
         arch: ${ARCH}
-    shm_size: &shm-size 2G
-    ulimits: &ulimits
-      core: ${ULIMIT_CORE}
+    shm_size: *shm-size
+    ulimits: *ulimits
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       ARROW_BUILD_BENCHMARKS: "ON"
       ARROW_BUILD_EXAMPLES: "ON"
       ARROW_ENABLE_TIMING_TESTS:  # inherit
+      ARROW_EXTRA_ERROR_CONTEXT: "ON"
       ARROW_MIMALLOC: "ON"
       ARROW_USE_LD_GOLD: "ON"
       ARROW_USE_PRECOMPILED_HEADERS: "ON"
+      BUILD_DOCS_PYTHON: "ON"
     volumes: &conda-volumes
       - .:/arrow:delegated
       - ${DOCKER_VOLUME_PREFIX}conda-ccache:/ccache:delegated
-    command:
-      ["/arrow/ci/scripts/cpp_build.sh /arrow /build true &&
+    command: &conda-cpp-command
+      ["
+        /arrow/ci/scripts/cpp_build.sh /arrow /build &&
         /arrow/ci/scripts/cpp_test.sh /arrow /build"]
 
   conda-cpp-valgrind:
@@ -259,13 +303,13 @@ services:
       args:
         repo: ${REPO}
         arch: ${ARCH}
-        prefix: /opt/conda
     shm_size: *shm-size
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       ARROW_CXXFLAGS: "-Og"  # Shrink test runtime by enabling minimal optimizations
       ARROW_ENABLE_TIMING_TESTS:  # inherit
       ARROW_FLIGHT: "OFF"
+      ARROW_FLIGHT_SQL: "OFF"
       ARROW_GANDIVA: "OFF"
       ARROW_JEMALLOC: "OFF"
       ARROW_RUNTIME_SIMD_LEVEL: "AVX2"  # AVX512 not supported by Valgrind (ARROW-9851)
@@ -273,10 +317,9 @@ services:
       ARROW_TEST_MEMCHECK: "ON"
       ARROW_USE_LD_GOLD: "ON"
       BUILD_WARNING_LEVEL: "PRODUCTION"
+      ARROW_CTEST_TIMEOUT: 500
     volumes: *conda-volumes
-    command:
-      ["/arrow/ci/scripts/cpp_build.sh /arrow /build &&
-        /arrow/ci/scripts/cpp_test.sh /arrow /build"]
+    command: *conda-cpp-command
 
   debian-cpp:
     # Usage:
@@ -297,7 +340,7 @@ services:
     shm_size: *shm-size
     ulimits: *ulimits
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       ARROW_ENABLE_TIMING_TESTS:  # inherit
       ARROW_MIMALLOC: "ON"
     volumes: &debian-volumes
@@ -316,7 +359,7 @@ services:
     #   docker-compose run --rm ubuntu-cpp
     # Parameters:
     #   ARCH: amd64, arm64v8, s390x, ...
-    #   UBUNTU: 18.04, 20.04
+    #   UBUNTU: 18.04, 20.04, 22.04
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cpp
     build:
       context: .
@@ -338,13 +381,70 @@ services:
       - apparmor:unconfined
     ulimits: *ulimits
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       ARROW_ENABLE_TIMING_TESTS:  # inherit
       ARROW_MIMALLOC: "ON"
     volumes: &ubuntu-volumes
       - .:/arrow:delegated
       - ${DOCKER_VOLUME_PREFIX}ubuntu-ccache:/ccache:delegated
     command: *cpp-command
+
+  ubuntu-cpp-static:
+    # Usage:
+    #   docker-compose build ubuntu-cpp-static
+    #   docker-compose run --rm ubuntu-cpp-static
+    # Parameters:
+    #   ARCH: amd64, arm64v8, s390x, ...
+    #   UBUNTU: 18.04, 20.04, 22.04
+    image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cpp-static
+    build:
+      context: .
+      dockerfile: ci/docker/ubuntu-${UBUNTU}-cpp.dockerfile
+      cache_from:
+        - ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cpp-static
+      args:
+        arch: ${ARCH}
+        base: "${ARCH}/ubuntu:${UBUNTU}"
+        clang_tools: ${CLANG_TOOLS}
+        llvm: ${LLVM}
+        gcc_version: ${GCC_VERSION}
+    shm_size: *shm-size
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - "/dev/fuse:/dev/fuse"
+    security_opt:
+      - apparmor:unconfined
+    ulimits: *ulimits
+    environment:
+      <<: [*ccache, *sccache]
+      ARROW_HOME: /arrow
+      ARROW_DEPENDENCY_SOURCE: BUNDLED
+      LIBARROW_MINIMAL: "false"
+      ARROW_MIMALLOC: "ON"
+    volumes: *ubuntu-volumes
+    command: &cpp-static-command
+      /bin/bash -c "
+        cd /arrow &&
+        r/inst/build_arrow_static.sh"
+
+  centos-cpp-static:
+    image: ${REPO}:centos-7-cpp-static
+    build:
+      context: .
+      dockerfile: ci/docker/centos-7-cpp.dockerfile
+      cache_from:
+        - ${REPO}:centos-7-cpp-static
+    shm_size: *shm-size
+    volumes:
+      - .:/arrow:delegated
+    environment:
+      <<: [*ccache, *sccache]
+      ARROW_DEPENDENCY_SOURCE: BUNDLED
+      ARROW_HOME: /arrow
+      LIBARROW_MINIMAL: "false"
+    command: /bin/bash -c " 
+          scl enable devtoolset-8 '/arrow/r/inst/build_arrow_static.sh'"
 
   ubuntu-cpp-bundled:
     # Arrow build with BUNDLED dependencies
@@ -357,10 +457,11 @@ services:
       args:
         arch: ${ARCH}
         base: "${ARCH}/ubuntu:${UBUNTU}"
+        llvm: ${LLVM}
     shm_size: *shm-size
     ulimits: *ulimits
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       ARROW_DEPENDENCY_SOURCE: BUNDLED
       CMAKE_GENERATOR: "Unix Makefiles"
     volumes: *ubuntu-volumes
@@ -370,11 +471,9 @@ services:
     # Usage:
     #   docker-compose build cuda-cpp
     #   docker-compose run --rm cuda-cpp
-    # Also need to edit the host docker configuration as follows:
-    #   https://github.com/docker/compose/issues/6691#issuecomment-561504928
     # Parameters:
     #   ARCH: amd64
-    #   CUDA: 9.1, 10.0, 10.1
+    #   CUDA: <depends on your nvidia driver, should match system CUDA>
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cuda-${CUDA}-cpp
     build:
       context: .
@@ -389,10 +488,33 @@ services:
     shm_size: *shm-size
     ulimits: *ulimits
     environment:
-      <<: *ccache
+      <<: [ *ccache, *sccache]
+      ARROW_BUILD_UTILITIES: "OFF"
+      ARROW_COMPUTE: "OFF"
+      ARROW_CSV: "OFF"
       ARROW_CUDA: "ON"
+      ARROW_DATASET: "OFF"
+      ARROW_ENABLE_TIMING_TESTS: "OFF"
+      ARROW_FILESYSTEM: "OFF"
+      ARROW_GANDIVA: "OFF"
+      ARROW_GCS: "OFF"
+      ARROW_HDFS: "OFF"
+      ARROW_JEMALLOC: "OFF"
+      ARROW_JSON: "OFF"
+      ARROW_ORC: "OFF"
+      ARROW_PARQUET: "OFF"
+      ARROW_PLASMA: "OFF"
+      ARROW_S3: "OFF"
+      ARROW_SUBSTRAIT: "OFF"
+      ARROW_WITH_OPENTELEMETRY: "OFF"
     volumes: *ubuntu-volumes
     command: *cpp-command
+    deploy: &cuda-deploy
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
 
   ubuntu-cpp-sanitizer:
     # Usage:
@@ -400,7 +522,7 @@ services:
     #   docker-compose run --rm ubuntu-cpp-sanitizer
     # Parameters:
     #   ARCH: amd64, arm64v8, ...
-    #   UBUNTU: 18.04, 20.04
+    #   UBUNTU: 22.04, ...
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cpp
     cap_add:
       # For LeakSanitizer
@@ -420,16 +542,19 @@ services:
       <<: *ccache
       CC: clang-${CLANG_TOOLS}
       CXX: clang++-${CLANG_TOOLS}
-      ARROW_BUILD_STATIC: "OFF"
       ARROW_ENABLE_TIMING_TESTS:  # inherit
+      # GH-33920: Disable Flight SQL to reduce build time.
+      # We'll be able to re-enable this with Ubuntu 24.04 because
+      # Ubuntu 24.04 will ship ProtoBuf 3.15.0 or later that is required
+      # by Flight SQL.
+      ARROW_FLIGHT_SQL: "OFF"
       ARROW_FUZZING: "ON"  # Check fuzz regressions
       ARROW_JEMALLOC: "OFF"
       ARROW_ORC: "OFF"
       ARROW_S3: "OFF"
       ARROW_USE_ASAN: "ON"
       ARROW_USE_UBSAN: "ON"
-      # utf8proc 2.1.0 in Ubuntu Bionic has test failures
-      utf8proc_SOURCE: "BUNDLED"
+      Protobuf_SOURCE: "AUTO"
     command: *cpp-command
 
   ubuntu-cpp-thread-sanitizer:
@@ -438,7 +563,7 @@ services:
     #   docker-compose run --rm ubuntu-cpp-thread-sanitizer
     # Parameters:
     #   ARCH: amd64, arm64v8, ...
-    #   UBUNTU: 18.04, 20.04
+    #   UBUNTU: 18.04, 20.04, 22.04
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cpp
     build:
       context: .
@@ -452,10 +577,11 @@ services:
     shm_size: *shm-size
     volumes: *ubuntu-volumes
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       CC: clang-${CLANG_TOOLS}
       CXX: clang++-${CLANG_TOOLS}
       ARROW_BUILD_STATIC: "OFF"
+      ARROW_CTEST_TIMEOUT: 500
       ARROW_ENABLE_TIMING_TESTS:  # inherit
       ARROW_DATASET: "ON"
       ARROW_JEMALLOC: "OFF"
@@ -483,7 +609,7 @@ services:
     shm_size: *shm-size
     ulimits: *ulimits
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       ARROW_ENABLE_TIMING_TESTS:  # inherit
       ARROW_MIMALLOC: "ON"
       Protobuf_SOURCE: "BUNDLED"  # Need Protobuf >= 3.15
@@ -491,6 +617,29 @@ services:
       - .:/arrow:delegated
       - ${DOCKER_VOLUME_PREFIX}fedora-ccache:/ccache:delegated
     command: *cpp-command
+
+  conan:
+    # Base service for Conan.
+    #
+    # Usage:
+    #   docker-compose run --rm conan
+    # Parameters:
+    #   CONAN: gcc11, gcc11-armv7, ...
+    #   See https://github.com/conan-io/conan-docker-tools#readme for
+    #   available images.
+    image: conanio/${CONAN}
+    user: root:root
+    shm_size: *shm-size
+    ulimits: *ulimits
+    environment:
+      <<: *sccache
+    volumes:
+      - .:/arrow:delegated
+    command: >-
+      /bin/bash -c "
+        /arrow/ci/scripts/install_sccache.sh unknown-linux-musl /usr/local/bin &&
+        /arrow/ci/scripts/conan_setup.sh &&
+        /arrow/ci/scripts/conan_build.sh /arrow /build"
 
   ############################### C GLib ######################################
 
@@ -514,7 +663,7 @@ services:
     ulimits: *ulimits
     environment:
       <<: *ccache
-      ARROW_GLIB_GTK_DOC: "true"
+      BUILD_DOCS_C_GLIB: "ON"
     volumes: *debian-volumes
     command: &c-glib-command >
       /bin/bash -c "
@@ -529,7 +678,7 @@ services:
     #   docker-compose run --rm ubuntu-c-glib
     # Parameters:
     #   ARCH: amd64, arm64v8, ...
-    #   UBUNTU: 18.04, 20.04
+    #   UBUNTU: 18.04, 20.04, 22.04
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-c-glib
     build:
       context: .
@@ -542,7 +691,6 @@ services:
     ulimits: *ulimits
     environment:
       <<: *ccache
-      ARROW_GLIB_GTK_DOC: "true"
     volumes: *ubuntu-volumes
     command: *c-glib-command
 
@@ -573,6 +721,7 @@ services:
     ulimits: *ulimits
     environment:
       <<: *ccache
+      BUILD_DOCS_C_GLIB: "ON"
     volumes: *debian-volumes
     command: &ruby-command >
       /bin/bash -c "
@@ -589,7 +738,7 @@ services:
     #   docker-compose run --rm ubuntu-ruby
     # Parameters:
     #   ARCH: amd64, arm64v8, ...
-    #   UBUNTU: 18.04, 20.04
+    #   UBUNTU: 18.04, 20.04, 22.04
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-ruby
     build:
       context: .
@@ -615,7 +764,7 @@ services:
     #   docker-compose run --rm conda-python
     # Parameters:
     #   ARCH: amd64, arm32v7
-    #   PYTHON: 3.6, 3.7, 3.8, 3.9
+    #   PYTHON: 3.7, 3.8, 3.9, 3.10
     image: ${REPO}:${ARCH}-conda-python-${PYTHON}
     build:
       context: .
@@ -628,10 +777,11 @@ services:
         python: ${PYTHON}
     shm_size: *shm-size
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
     volumes: *conda-volumes
     command: &python-conda-command
-      ["/arrow/ci/scripts/cpp_build.sh /arrow /build &&
+      ["
+        /arrow/ci/scripts/cpp_build.sh /arrow /build &&
         /arrow/ci/scripts/python_build.sh /arrow /build &&
         /arrow/ci/scripts/python_test.sh /arrow"]
 
@@ -642,7 +792,7 @@ services:
     #   docker-compose run --rm cuda-python
     # Parameters:
     #   ARCH: amd64
-    #   CUDA: 8.0, 10.0, ...
+    #   CUDA: <depends on your nvidia driver, should match system CUDA>
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cuda-${CUDA}-python-3
     build:
       context: .
@@ -651,11 +801,31 @@ services:
         - ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cuda-${CUDA}-python-3
       args:
         base: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cuda-${CUDA}-cpp
+        numba: ${NUMBA}
     shm_size: *shm-size
     environment:
-      <<: *ccache
+      <<: [ *ccache, *sccache ] 
+      ARROW_BUILD_UTILITIES: "OFF"
+      ARROW_COMPUTE: "ON"
+      ARROW_CSV: "ON"
       ARROW_CUDA: "ON"
+      ARROW_DATASET: "ON"
+      ARROW_ENABLE_TIMING_TESTS: "OFF"
+      ARROW_FILESYSTEM: "ON"
+      ARROW_GANDIVA: "OFF"
+      ARROW_GCS: "OFF"
+      ARROW_HDFS: "ON"
+      ARROW_JEMALLOC: "ON"
+      ARROW_JSON: "ON"
+      ARROW_ORC: "OFF"
+      ARROW_PARQUET: "ON"
+      ARROW_PLASMA: "OFF"
+      ARROW_S3: "OFF"
+      ARROW_SUBSTRAIT: "OFF"
+      ARROW_WITH_OPENTELEMETRY: "OFF"
+      SETUPTOOLS_SCM_PRETEND_VERSION:
     volumes: *ubuntu-volumes
+    deploy: *cuda-deploy
     command: &python-command >
       /bin/bash -c "
         /arrow/ci/scripts/cpp_build.sh /arrow /build &&
@@ -691,7 +861,7 @@ services:
     #   docker-compose run --rm ubuntu-python
     # Parameters:
     #   ARCH: amd64, arm64v8, ...
-    #   UBUNTU: 18.04, 20.04
+    #   UBUNTU: 18.04, 20.04, 22.04
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-python-3
     build:
       context: .
@@ -705,6 +875,18 @@ services:
       <<: *ccache
     volumes: *ubuntu-volumes
     command: *python-command
+
+  ubuntu-swift:
+    # Usage:
+    #   docker-compose build ubuntu-swift
+    #   docker-compose run --rm ubuntu-swift
+    # Parameters:
+    image: swift:5.7.3
+    shm_size: *shm-size
+    volumes: *ubuntu-volumes
+    command: >
+      /bin/bash -c "/arrow/ci/scripts/swift_test.sh /arrow"
+
 
   fedora-python:
     # Usage:
@@ -757,7 +939,7 @@ services:
     # Parameters:
     #   ARCH: amd64, arm64v8, ...
     #   PYARROW_VERSION: The test target pyarrow version such as "3.0.0"
-    #   UBUNTU: 18.04, 20.04
+    #   UBUNTU: 18.04, 20.04, 22.04
     image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-python-3
     build:
       context: .
@@ -769,6 +951,8 @@ services:
     shm_size: *shm-size
     environment:
       <<: *ccache
+      # Bundled build of OpenTelemetry needs a git client
+      ARROW_WITH_OPENTELEMETRY: "OFF"
       PYARROW_VERSION: ${PYARROW_VERSION:-}
     volumes: *ubuntu-volumes
     command: >
@@ -780,47 +964,23 @@ services:
   ############################ Python wheels ##################################
 
   # See available versions at:
-  #    https://quay.io/repository/pypa/manylinux2010_x86_64?tab=tags
-  #    only amd64 arch is supported
-  python-wheel-manylinux-2010:
-    image: ${REPO}:${ARCH}-python-${PYTHON}-wheel-manylinux-2010-vcpkg-${VCPKG}
-    build:
-      args:
-        arch_alias: ${ARCH_ALIAS}
-        arch_short_alias: ${ARCH_SHORT_ALIAS}
-        base: quay.io/pypa/manylinux2010_${ARCH_ALIAS}:2021-10-11-14ac00e
-        vcpkg: ${VCPKG}
-        python: ${PYTHON}
-      context: .
-      dockerfile: ci/docker/python-wheel-manylinux-201x.dockerfile
-      cache_from:
-        - ${REPO}:${ARCH}-python-${PYTHON}-wheel-manylinux-2010-vcpkg-${VCPKG}
-    environment:
-      <<: *ccache
-      MANYLINUX_VERSION: 2010
-    volumes:
-      - .:/arrow:delegated
-      - ${DOCKER_VOLUME_PREFIX}python-wheel-manylinux2010-ccache:/ccache:delegated
-    command: /arrow/ci/scripts/python_wheel_manylinux_build.sh
-
-  # See available versions at:
   #    https://quay.io/repository/pypa/manylinux2014_x86_64?tab=tags
   python-wheel-manylinux-2014:
     image: ${REPO}:${ARCH}-python-${PYTHON}-wheel-manylinux-2014-vcpkg-${VCPKG}
     build:
       args:
-        arch_alias: ${ARCH_ALIAS}
-        arch_short_alias: ${ARCH_SHORT_ALIAS}
-        base:  quay.io/pypa/manylinux2014_${ARCH_ALIAS}:2021-10-11-14ac00e
+        arch: ${ARCH}
+        arch_short: ${ARCH_SHORT}
+        base: quay.io/pypa/manylinux2014_${ARCH_ALIAS}:2022-10-25-fbea779
         vcpkg: ${VCPKG}
         python: ${PYTHON}
+        manylinux: 2014
       context: .
       dockerfile: ci/docker/python-wheel-manylinux-201x.dockerfile
       cache_from:
         - ${REPO}:${ARCH}-python-${PYTHON}-wheel-manylinux-2014-vcpkg-${VCPKG}
     environment:
       <<: *ccache
-      MANYLINUX_VERSION: 2014
     volumes:
       - .:/arrow:delegated
       - ${DOCKER_VOLUME_PREFIX}python-wheel-manylinux2014-ccache:/ccache:delegated
@@ -855,17 +1015,7 @@ services:
     command: /arrow/ci/scripts/python_wheel_unix_test.sh /arrow
 
   python-wheel-windows-vs2017:
-    # The windows images must be built locally and pushed to a remote registry:
-    # export REPO=ghcr.io/ursacomputing/arrow
-    # PYTHON=3.6 archery docker build --no-pull --using-docker-cli python-wheel-windows-vs2017
-    # PYTHON=3.7 archery docker build --no-pull --using-docker-cli python-wheel-windows-vs2017
-    # PYTHON=3.8 archery docker build --no-pull --using-docker-cli python-wheel-windows-vs2017
-    # PYTHON=3.9 archery docker build --no-pull --using-docker-cli python-wheel-windows-vs2017
-    # PYTHON=3.6 archery docker push python-wheel-windows-vs2017
-    # PYTHON=3.7 archery docker push python-wheel-windows-vs2017
-    # PYTHON=3.8 archery docker push python-wheel-windows-vs2017
-    # PYTHON=3.9 archery docker push python-wheel-windows-vs2017
-    image: ${REPO}:python-${PYTHON}-wheel-windows-vs2017-vcpkg-${VCPKG}
+    image: ${REPO}:python-${PYTHON}-wheel-windows-vs2017-vcpkg-${VCPKG}-${PYTHON_WHEEL_WINDOWS_IMAGE_REVISION}
     build:
       args:
         vcpkg: ${VCPKG}
@@ -875,8 +1025,8 @@ services:
       # This should make the pushed images reusable, but the image gets rebuilt.
       # Uncomment if no local cache is available.
       # cache_from:
-      #   - mcr.microsoft.com/windows/servercore:ltsc2019
-      #   - ${REPO}:wheel-windows-vs2017
+      #   - abrarov/msvc-2017:2.11.0
+      #   - ${REPO}:python-${PYTHON}-wheel-windows-vs2017-vcpkg-${VCPKG}-${PYTHON_WHEEL_WINDOWS_IMAGE_REVISION}
     volumes:
       - "${DOCKER_VOLUME_PREFIX}python-wheel-windows-clcache:C:/clcache"
       - type: bind
@@ -885,8 +1035,14 @@ services:
     command: arrow\\ci\\scripts\\python_wheel_windows_build.bat
 
   python-wheel-windows-test:
-    image: python:${PYTHON}-windowsservercore-1809
+    image: ${REPO}:python-${PYTHON}-wheel-windows-test-vs2017-${PYTHON_WHEEL_WINDOWS_IMAGE_REVISION}
+    build:
+      args:
+        python: ${PYTHON}
+      context: .
+      dockerfile: ci/docker/python-wheel-windows-test-vs2017.dockerfile
     volumes:
+      - "${DOCKER_VOLUME_PREFIX}python-wheel-windows-clcache:C:/clcache"
       - type: bind
         source: .
         target: "C:/arrow"
@@ -906,11 +1062,14 @@ services:
       <<: *ccache
     volumes:
       - .:/arrow:delegated
+      - ${DOCKER_VOLUME_PREFIX}maven-cache:/root/.m2:delegated
       - ${DOCKER_VOLUME_PREFIX}python-wheel-manylinux2014-ccache:/ccache:delegated
     command:
-      ["pip install -e /arrow/dev/archery &&
-        /arrow/ci/scripts/java_cdata_build.sh /arrow /java-native-build /arrow/java-dist &&
-        /arrow/ci/scripts/java_jni_manylinux_build.sh /arrow /build /arrow/java-dist"]
+      ["pip install -e /arrow/dev/archery && \
+        /arrow/ci/scripts/java_jni_manylinux_build.sh /arrow /build /arrow/java-dist && \
+        source /opt/rh/rh-maven35/enable && \
+        /arrow/ci/scripts/java_build.sh /arrow /build /arrow/java-dist && \
+        /arrow/ci/scripts/java_test.sh /arrow /build /arrow/java-dist"]
 
   ##############################  Integration #################################
 
@@ -939,9 +1098,40 @@ services:
         pandas: ${PANDAS}
     shm_size: *shm-size
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
+      PARQUET_REQUIRE_ENCRYPTION:  # inherit
+      PYTEST_ARGS:  # inherit
+      HYPOTHESIS_PROFILE:  # inherit
+      PYARROW_TEST_HYPOTHESIS:  # inherit
     volumes: *conda-volumes
     command: *python-conda-command
+
+  conda-python-docs:
+    # Usage:
+    #   archery docker run conda-python-docs
+    #
+    # Only a single rule is enabled for now to check undocumented arguments.
+    # We should extend the list of enabled rules after adding this build to
+    # the CI pipeline.
+    image: ${REPO}:${ARCH}-conda-python-${PYTHON}-pandas-${PANDAS}
+    environment:
+      <<: *ccache
+      ARROW_SUBSTRAIT: "ON"
+      LC_ALL: "C.UTF-8"
+      LANG: "C.UTF-8"
+      BUILD_DOCS_CPP: "ON"
+      BUILD_DOCS_PYTHON: "ON"
+      # GH-31506/GH-33609: Remove --disable-warnings once
+      # https://github.com/lgpage/pytest-cython/issues/24 is resolved
+      # and a new version that includes the fix is released.
+      PYTEST_ARGS: "--doctest-modules --doctest-cython --disable-warnings"
+    volumes: *conda-volumes
+    command:
+      ["/arrow/ci/scripts/cpp_build.sh /arrow /build &&
+        /arrow/ci/scripts/python_build.sh /arrow /build &&
+        pip install -e /arrow/dev/archery[numpydoc] &&
+        archery numpydoc --allow-rule GL10,PR01,PR03,PR04,PR05,PR10,RT03,YD01 &&
+        /arrow/ci/scripts/python_test.sh /arrow"]
 
   conda-python-dask:
     # Possible $DASK parameters:
@@ -974,6 +1164,33 @@ services:
         /arrow/ci/scripts/python_build.sh /arrow /build &&
         /arrow/ci/scripts/integration_dask.sh"]
 
+  conda-python-substrait:
+    # Usage:
+    #   docker-compose build conda
+    #   docker-compose build conda-cpp
+    #   docker-compose build conda-python
+    #   docker-compose build conda-python-substrait
+    #   docker-compose run --rm conda-python-substrait
+    image: ${REPO}:${ARCH}-conda-python-${PYTHON}
+    build:
+      context: .
+      dockerfile: ci/docker/conda-python-substrait.dockerfile
+      cache_from:
+        - ${REPO}:${ARCH}-conda-python-${PYTHON}
+      args:
+        repo: ${REPO}
+        arch: ${ARCH}
+        python: ${PYTHON}
+    shm_size: *shm-size
+    environment:
+      <<: *ccache
+      ARROW_SUBSTRAIT: "ON"
+    volumes: *conda-volumes
+    command:
+      ["/arrow/ci/scripts/cpp_build.sh /arrow /build &&
+        /arrow/ci/scripts/python_build.sh /arrow /build &&
+        /arrow/ci/scripts/integration_substrait.sh"]
+
   conda-python-jpype:
     # Usage:
     #   docker-compose build conda
@@ -995,6 +1212,7 @@ services:
     environment:
       <<: *ccache
       ARROW_FLIGHT: "OFF"
+      ARROW_FLIGHT_SQL: "OFF"
       ARROW_GANDIVA: "OFF"
     volumes: *conda-volumes
     command:
@@ -1031,6 +1249,9 @@ services:
       ARROW_ORC: "OFF"
       ARROW_PARQUET: "OFF"
       ARROW_PLASMA: "OFF"
+      JAVA_JNI_CMAKE_ARGS: >-
+        -DARROW_JAVA_JNI_ENABLE_DEFAULT=OFF
+        -DARROW_JAVA_JNI_ENABLE_C=ON
     volumes:
       - .:/arrow:delegated
       - ${DOCKER_VOLUME_PREFIX}maven-cache:/root/.m2:delegated
@@ -1038,71 +1259,9 @@ services:
     command:
       [ "/arrow/ci/scripts/cpp_build.sh /arrow /build &&
           /arrow/ci/scripts/python_build.sh /arrow /build &&
-          /arrow/ci/scripts/java_cdata_build.sh /arrow /build/java/c/build /build/java/c &&
-          /arrow/ci/scripts/java_build.sh /arrow /build &&
-          /arrow/ci/scripts/java_cdata_integration.sh /arrow" ]
-
-  conda-python-turbodbc:
-    # Possible $TURBODBC parameters:
-    #  - `latest`: latest release
-    #  - `master`: git master branch, use `docker-compose run --no-cache`
-    #  - `<version>`: specific version available under github releases
-    # Usage:
-    #   docker-compose build conda
-    #   docker-compose build conda-cpp
-    #   docker-compose build conda-python
-    #   docker-compose build conda-python-turbodbc
-    #   docker-compose run --rm conda-python-turbodbc
-    image: ${REPO}:${ARCH}-conda-python-${PYTHON}-turbodbc-${TURBODBC}
-    build:
-      context: .
-      dockerfile: ci/docker/conda-python-turbodbc.dockerfile
-      cache_from:
-        - ${REPO}:${ARCH}-conda-python-${PYTHON}-turbodbc-${TURBODBC}
-      args:
-        repo: ${REPO}
-        arch: ${ARCH}
-        python: ${PYTHON}
-        turbodbc: ${TURBODBC}
-    shm_size: *shm-size
-    environment:
-      <<: *ccache
-    volumes: *conda-volumes
-    command:
-      ["/arrow/ci/scripts/cpp_build.sh /arrow /build &&
-        /arrow/ci/scripts/python_build.sh /arrow /build &&
-        /arrow/ci/scripts/integration_turbodbc.sh /turbodbc /build"]
-
-  conda-python-kartothek:
-    # Possible $KARTOTHEK parameters:
-    #  - `latest`: latest release
-    #  - `master`: git master branch, use `docker-compose run --no-cache`
-    #  - `<version>`: specific version available under github releases
-    # Usage:
-    #   docker-compose build conda
-    #   docker-compose build conda-cpp
-    #   docker-compose build conda-python
-    #   docker-compose build conda-python-kartothek
-    #   docker-compose run --rm conda-python-kartothek
-    image: ${REPO}:${ARCH}-conda-python-${PYTHON}-kartothek-${KARTOTHEK}
-    build:
-      context: .
-      dockerfile: ci/docker/conda-python-kartothek.dockerfile
-      cache_from:
-        - ${REPO}:${ARCH}-conda-python-${PYTHON}-kartothek-${KARTOTHEK}
-      args:
-        repo: ${REPO}
-        arch: ${ARCH}
-        python: ${PYTHON}
-        kartothek: ${KARTOTHEK}
-    shm_size: *shm-size
-    environment:
-      <<: *ccache
-    volumes: *conda-volumes
-    command:
-      ["/arrow/ci/scripts/cpp_build.sh /arrow /build &&
-        /arrow/ci/scripts/python_build.sh /arrow /build &&
-        /arrow/ci/scripts/integration_kartothek.sh /kartothek /build"]
+          /arrow/ci/scripts/java_jni_build.sh /arrow $${ARROW_HOME} /build /tmp/dist/java/$$(arch) &&
+          /arrow/ci/scripts/java_build.sh /arrow /build /tmp/dist/java &&
+          /arrow/ci/scripts/java_cdata_integration.sh /arrow /tmp/dist/java" ]
 
   ################################## R ########################################
 
@@ -1123,13 +1282,17 @@ services:
         base: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-cpp
         gcc_version: ${GCC_VERSION}
         tz: ${TZ}
+        r_prune_deps: ${R_PRUNE_DEPS}
+        r_duckdb_dev: ${R_DUCKDB_DEV:-}
     shm_size: *shm-size
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       ARROW_R_CXXFLAGS: '-Werror'
+      ARROW_FLIGHT: 'ON'
       LIBARROW_BUILD: 'false'
       NOT_CRAN: 'true'
       ARROW_R_DEV: ${ARROW_R_DEV}
+      ARROW_SOURCE_HOME: '/arrow'
     volumes: *ubuntu-volumes
     command: >
       /bin/bash -c "
@@ -1140,6 +1303,9 @@ services:
   ubuntu-r-only-r:
     environment:
       ARROW_DEPENDENCY_SOURCE: ''
+      ARROW_SOURCE_HOME: '/arrow'
+      FORCE_BUNDLED_BUILD: 'true'
+      LIBARROW_BUILD: 'true'
     extends: ubuntu-r
     command: >
       /bin/bash -c "
@@ -1163,8 +1329,11 @@ services:
         r_dev: ${ARROW_R_DEV}
         devtoolset_version: ${DEVTOOLSET_VERSION}
         tz: ${TZ}
+        r_prune_deps: ${R_PRUNE_DEPS}
+        r_custom_ccache: ${R_CUSTOM_CCACHE}
     shm_size: *shm-size
     environment:
+      <<: *sccache
       LIBARROW_DOWNLOAD: "false"
       ARROW_SOURCE_HOME: "/arrow"
       ARROW_R_DEV: ${ARROW_R_DEV}
@@ -1194,8 +1363,10 @@ services:
         base: wch1/r-debug:latest
         r_bin: RDsan
         tz: ${TZ}
+        r_prune_deps: ${R_PRUNE_DEPS}
     environment:
       <<: *ccache
+      ARROW_SOURCE_HOME: "/arrow"
     volumes: *ubuntu-volumes
     command: >
       /bin/bash -c "
@@ -1209,11 +1380,12 @@ services:
       cache_from:
         - ${REPO}:r-rhub-fedora-clang-devel-latest
       args:
-        base: ${REPO}:r-fedora-clang-devel-san
+        base: rhub/fedora-clang-devel-san
         r_dev: ${ARROW_R_DEV}
         devtoolset_version: ${DEVTOOLSET_VERSION}
         r_bin: RDsan
         tz: ${TZ}
+        r_prune_deps: ${R_PRUNE_DEPS}
     shm_size: *shm-size
     environment:
       LIBARROW_DOWNLOAD: "false"
@@ -1226,14 +1398,6 @@ services:
     command: >
       /bin/bash -c "
         /arrow/ci/scripts/r_sanitize.sh /arrow"
-
-  r-fedora-clang-devel-san:
-    image: ${REPO}:r-fedora-clang-devel-san
-    build:
-      context: .
-      dockerfile: ci/docker/r-fedora-clang-devel-san.dockerfile
-      cache_from:
-        - ${REPO}:r-fedora-clang-devel-san
 
   ubuntu-r-valgrind:
     # Only 18.04 and amd64 supported
@@ -1251,11 +1415,12 @@ services:
         r_bin: RDvalgrind
         tz: ${TZ}
     environment:
-      <<: *ccache
+      <<: [*ccache, *sccache]
       ARROW_R_DEV: ${ARROW_R_DEV}
       # AVX512 not supported by Valgrind (similar to ARROW-9851) some runners support AVX512 and some do not
       # so some build might pass without this setting, but we want to ensure that we stay to AVX2 regardless of runner.
       EXTRA_CMAKE_FLAGS: "-DARROW_RUNTIME_SIMD_LEVEL=AVX2"
+      ARROW_SOURCE_HOME: "/arrow"
     volumes: *ubuntu-volumes
     command: >
       /bin/bash -c "
@@ -1265,27 +1430,24 @@ services:
     # Usage:
     #   docker-compose build r-revdepcheck
     #   docker-compose run r-revdepcheck
-    image: ${REPO}:r-rstudio-r-base-4.0-focal-revdepcheck
+    image: ${REPO}:r-rstudio-r-base-4.2-focal-revdepcheck
     build:
       context: .
       dockerfile: ci/docker/linux-r.dockerfile
       cache_from:
-        - ${REPO}:r-rstudio-r-base-4.0-focal-revdepcheck
+        - ${REPO}:r-rstudio-r-base-4.2-focal-revdepcheck
       args:
-        base: rstudio/r-base:4.0-focal
+        base: rstudio/r-base:4.2-focal
         r_dev: ${ARROW_R_DEV}
         tz: ${TZ}
     shm_size: *shm-size
     environment:
-      LIBARROW_DOWNLOAD: "true"
-      LIBARROW_MINIMAL: "false"
-      ARROW_SOURCE_HOME: "/arrow"
+      N_JOBS:
+      ARROW_REVDEP_WORKERS:
       ARROW_R_DEV: "true"
     volumes: *ubuntu-volumes
     command: >
       /bin/bash -c "/arrow/ci/scripts/r_revdepcheck.sh /arrow"
-
-
 
   ################################# Go ########################################
 
@@ -1302,6 +1464,7 @@ services:
       args:
         arch: ${ARCH}
         go: ${GO}
+        staticcheck: ${STATICCHECK}
     shm_size: *shm-size
     volumes: *debian-volumes
     command: &go-command >
@@ -1362,9 +1525,11 @@ services:
         node: ${NODE}
     shm_size: *shm-size
     volumes: *debian-volumes
+    environment:
+      BUILD_DOCS_JS: "ON"
     command: &js-command >
       /bin/bash -c "
-        /arrow/ci/scripts/js_build.sh /arrow &&
+        /arrow/ci/scripts/js_build.sh /arrow /build &&
         /arrow/ci/scripts/js_test.sh /arrow"
 
   #################################### C# #####################################
@@ -1373,15 +1538,16 @@ services:
     # Usage:
     #   docker-compose build ubuntu-csharp
     #   docker-compose run ubuntu-csharp
-    image: ${REPO}:${ARCH}-ubuntu-18.04-csharp-${DOTNET}
+    image: ${REPO}:${ARCH}-ubuntu-20.04-csharp-${DOTNET}
     build:
       context: .
-      dockerfile: ci/docker/ubuntu-18.04-csharp.dockerfile
+      dockerfile: ci/docker/ubuntu-20.04-csharp.dockerfile
       cache_from:
-        - ${REPO}:${ARCH}-ubuntu-18.04-csharp-${DOTNET}
+        - ${REPO}:${ARCH}-ubuntu-20.04-csharp-${DOTNET}
       args:
+        arch: ${ARCH}
         dotnet: ${DOTNET}
-        platform: bionic  # use bionic-arm64v8 for ARM
+        platform: focal
     shm_size: *shm-size
     volumes: *ubuntu-volumes
     command: &csharp-command >
@@ -1396,16 +1562,10 @@ services:
     # Usage:
     #   docker-compose build debian-java
     #   docker-compose run debian-java
-    image: ${REPO}:${ARCH}-debian-9-java-${JDK}-maven-${MAVEN}
-    build:
-      context: .
-      dockerfile: ci/docker/debian-9-java.dockerfile
-      cache_from:
-        - ${REPO}:${ARCH}-debian-9-java-${JDK}-maven-${MAVEN}
-      args:
-        arch: ${ARCH}
-        jdk: ${JDK}
-        maven: ${MAVEN}
+    # Parameters:
+    #   MAVEN: 3.5.4, 3.6.2
+    #   JDK: 8, 11
+    image: ${ARCH}/maven:${MAVEN}-jdk-${JDK}
     shm_size: *shm-size
     volumes: &java-volumes
       - .:/arrow:delegated
@@ -1415,34 +1575,17 @@ services:
         /arrow/ci/scripts/java_build.sh /arrow /build &&
         /arrow/ci/scripts/java_test.sh /arrow /build"
 
-  debian-java-jni:
-    # Includes plasma test, jni for gandiva and orc, and C data interface.
+  oracle-java:
     # Usage:
-    #   docker-compose build debian-java
-    #   docker-compose build debian-java-jni
-    #   docker-compose run debian-java-jni
-    image: ${REPO}:${ARCH}-debian-9-java-${JDK}-maven-${MAVEN}-jni
-    build:
-      context: .
-      dockerfile: ci/docker/linux-apt-jni.dockerfile
-      cache_from:
-        - ${REPO}:${ARCH}-debian-9-java-${JDK}-maven-${MAVEN}-jni
-      args:
-        base: ${REPO}:${ARCH}-debian-9-java-${JDK}-maven-${MAVEN}
-        llvm: ${LLVM}
+    #   docker-compose build oracle-java
+    #   docker-compose run oracle-java
+    # Parameters:
+    #   MAVEN: 3.8.5
+    #   JDK: 17
+    image: ${ARCH}/maven:${MAVEN}-openjdk-${JDK}
     shm_size: *shm-size
-    environment:
-      <<: *ccache
-    volumes:
-      - .:/arrow:delegated
-      - ${DOCKER_VOLUME_PREFIX}maven-cache:/root/.m2:delegated
-      - ${DOCKER_VOLUME_PREFIX}debian-ccache:/ccache:delegated
-    command:
-      /bin/bash -c "
-        /arrow/ci/scripts/cpp_build.sh /arrow /build &&
-        /arrow/ci/scripts/java_cdata_build.sh /arrow /build/java/c/build /build/java/c &&
-        /arrow/ci/scripts/java_build.sh /arrow /build &&
-        /arrow/ci/scripts/java_test.sh /arrow /build"
+    volumes: *java-volumes
+    command: *java-command
 
   ############################## Integration ##################################
 
@@ -1502,19 +1645,25 @@ services:
         base: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-python-3
     environment:
       <<: *ccache
+      ARROW_JAVA_SKIP_GIT_PLUGIN:
       ARROW_CUDA: "ON"
-      ARROW_GLIB_GTK_DOC: "true"
+      ARROW_SUBSTRAIT: "ON"
+      BUILD_DOCS_C_GLIB: "ON"
+      BUILD_DOCS_CPP: "ON"
+      BUILD_DOCS_JAVA: "ON"
+      BUILD_DOCS_JS: "ON"
+      BUILD_DOCS_PYTHON: "ON"
+      BUILD_DOCS_R: "ON"
       Protobuf_SOURCE: "BUNDLED"  # Need Protobuf >= 3.15
     volumes: *ubuntu-volumes
     command: &docs-command >
       /bin/bash -c "
-        /arrow/ci/scripts/cpp_build.sh /arrow /build true &&
+        /arrow/ci/scripts/cpp_build.sh /arrow /build &&
         /arrow/ci/scripts/c_glib_build.sh /arrow /build &&
         /arrow/ci/scripts/python_build.sh /arrow /build &&
-        /arrow/ci/scripts/java_build.sh /arrow /build true &&
-        /arrow/ci/scripts/js_build.sh /arrow true &&
-        /arrow/ci/scripts/r_build.sh /arrow true &&
-        /arrow/ci/scripts/docs_build.sh /arrow /build"
+        /arrow/ci/scripts/r_build.sh /arrow /build &&
+        /arrow/ci/scripts/js_build.sh /arrow /build &&
+        /arrow/ci/scripts/java_build.sh /arrow /build"
 
   ################################# Tools #####################################
 
@@ -1535,7 +1684,10 @@ services:
     environment:
       <<: *ccache
     volumes: *ubuntu-volumes
-    command: archery lint --all --no-clang-tidy --no-iwyu --no-numpydoc
+    command: >
+      /bin/bash -c "
+        git config --global --add safe.directory /arrow &&
+        archery lint --all --no-clang-tidy --no-iwyu --no-numpydoc"
 
   ######################### Integration Tests #################################
 
@@ -1548,7 +1700,7 @@ services:
       POSTGRES_PASSWORD: postgres
 
   impala:
-    # required for the hiveserver and hdfs tests
+    # required for the hdfs tests
     image: ibisproject/impala:latest
     hostname: impala
     links:
@@ -1570,27 +1722,6 @@ services:
       - 25000:25000
       - 25010:25010
       - 25020:25020
-
-  conda-cpp-hiveserver2:
-    # Usage:
-    #   docker-compose build conda-cpp
-    #   docker-compose build conda-cpp-hiveserver2
-    #   docker-compose run conda-cpp-hiveserver2
-    image: ${REPO}:${ARCH}-conda-cpp
-    links:
-      - impala:impala
-    environment:
-      <<: *ccache
-      ARROW_FLIGHT: "OFF"
-      ARROW_GANDIVA: "OFF"
-      ARROW_PLASMA: "OFF"
-      ARROW_HIVESERVER2: "ON"
-      ARROW_HIVESERVER2_TEST_HOST: impala
-    shm_size: *shm-size
-    volumes: *conda-volumes
-    command:
-      ["/arrow/ci/scripts/cpp_build.sh /arrow /build &&
-        /arrow/ci/scripts/integration_hiveserver2.sh /arrow /build"]
 
   conda-python-hdfs:
     # Usage:
@@ -1617,6 +1748,9 @@ services:
       - impala:impala
     environment:
       <<: *ccache
+      ARROW_ENGINE: "OFF"
+      ARROW_FLIGHT: "OFF"
+      ARROW_FLIGHT_SQL: "OFF"
       ARROW_HDFS: "ON"
       ARROW_HDFS_TEST_HOST: impala
       ARROW_HDFS_TEST_PORT: 8020
@@ -1663,3 +1797,82 @@ services:
         /arrow/ci/scripts/python_build.sh /arrow /build &&
         /arrow/ci/scripts/java_build.sh /arrow /build &&
         /arrow/ci/scripts/integration_spark.sh /arrow /spark ${TEST_PYARROW_ONLY:-false}"]
+
+  ################################# Source Verification #####################################
+
+  conda-verify-rc:
+    image: ubuntu:${UBUNTU}
+    volumes:
+      - .:/arrow:delegated
+      - ${DOCKER_VOLUME_PREFIX}conda-ccache:/ccache:delegated
+    shm_size: '1gb'
+    environment:
+      <<: *ccache
+      CMAKE_GENERATOR: Ninja
+      DEBIAN_FRONTEND: "noninteractive"
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: 1
+      TEST_APT: 0  # would require docker-in-docker
+      TEST_YUM: 0
+      USE_CONDA: 1
+    command: >
+      /bin/bash -c "
+        apt update -y && apt install -y curl git gnupg tzdata wget &&
+        git config --global --add safe.directory /arrow &&
+        /arrow/dev/release/verify-release-candidate.sh $${VERIFY_VERSION} $${VERIFY_RC}"
+
+  almalinux-verify-rc:
+    # Usage:
+    #   docker-compose build almalinux-verify-rc
+    #   docker-compose run -e VERIFY_VERSION=6.0.1 -e VERIFY_RC=1 almalinux-verify-rc
+    # Parameters:
+    #   ALMALINUX: 8
+    image: ${REPO}:${ARCH}-almalinux-${ALMALINUX}-verify-rc
+    build:
+      context: .
+      dockerfile: ci/docker/almalinux-${ALMALINUX}-verify-rc.dockerfile
+      cache_from:
+        - ${REPO}:${ARCH}-almalinux-${ALMALINUX}-verify-rc
+      args:
+        repo: ${REPO}
+        arch: ${ARCH}
+    volumes:
+      - .:/arrow:delegated
+      - ${DOCKER_VOLUME_PREFIX}almalinux-ccache:/ccache:delegated
+    shm_size: '1gb'
+    environment:
+      <<: *ccache
+      CMAKE_GENERATOR: Ninja
+      TEST_APT: 0  # would require docker-in-docker
+      TEST_YUM: 0
+    command: >
+      /bin/bash -c "
+        /arrow/dev/release/verify-release-candidate.sh $${VERIFY_VERSION} $${VERIFY_RC}"
+
+  ubuntu-verify-rc:
+    # Usage:
+    #   docker-compose build ubuntu-verify-rc
+    #   docker-compose run -e VERIFY_VERSION=6.0.1 -e VERIFY_RC=1 ubuntu-verify-rc
+    # Parameters:
+    #   UBUNTU: 18.04, 20.04, 22.04
+    image: ${REPO}:${ARCH}-ubuntu-${UBUNTU}-verify-rc
+    build:
+      context: .
+      dockerfile: ci/docker/ubuntu-${UBUNTU}-verify-rc.dockerfile
+      cache_from:
+        - ${REPO}:${ARCH}-ubuntu-${UBUNTU}-verify-rc
+      args:
+        repo: ${REPO}
+        arch: ${ARCH}
+    volumes:
+      - .:/arrow:delegated
+      - ${DOCKER_VOLUME_PREFIX}ubuntu-ccache:/ccache:delegated
+    shm_size: '1gb'
+    environment:
+      <<: *ccache
+      CMAKE_GENERATOR: Ninja
+      TEST_APT: 0  # would require docker-in-docker
+      TEST_YUM: 0
+    command: >
+      /bin/bash -c "
+        git config --global --add safe.directory /arrow &&
+        /arrow/dev/release/verify-release-candidate.sh $${VERIFY_VERSION} $${VERIFY_RC}"

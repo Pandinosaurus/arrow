@@ -38,6 +38,18 @@ test_that("Schema print method", {
   )
 })
 
+test_that("Schema$code()", {
+  expect_code_roundtrip(
+    schema(a = int32(), b = struct(c = double(), d = utf8()), e = list_of(binary()))
+  )
+
+  skip_if(packageVersion("rlang") < 1)
+  expect_error(
+    eval(schema(x = int32(), y = DayTimeInterval__initialize())$code()),
+    "Unsupported type"
+  )
+})
+
 test_that("Schema with non-nullable fields", {
   expect_output(
     print(
@@ -237,4 +249,14 @@ test_that("Schemas from lists", {
 
   expect_equal(name_list_schema, schema(b = double(), c = string(), d = int8()))
   expect_equal(field_list_schema, schema(b = double(), c = bool(), d = string()))
+})
+
+test_that("as_schema() works for Schema objects", {
+  schema <- schema(col1 = int32())
+  expect_identical(as_schema(schema), schema)
+})
+
+test_that("as_schema() works for StructType objects", {
+  struct_type <- struct(col1 = int32())
+  expect_equal(as_schema(struct_type), schema(col1 = int32()))
 })

@@ -22,7 +22,7 @@ set -u
 
 SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ARROW_DIR="${SOURCE_DIR}/../.."
-ARROW_SITE_DIR="${ARROW_DIR}/../arrow-site"
+: ${ARROW_SITE_DIR:="${ARROW_DIR}/../arrow-site"}
 
 if [ "$#" -ne 2 ]; then
   echo "Usage: $0 <previous-version> <version>"
@@ -38,9 +38,10 @@ announce_file="${release_dir}/${version}.md"
 versions_yml="${ARROW_SITE_DIR}/_data/versions.yml"
 
 pushd "${ARROW_SITE_DIR}"
+source "${SOURCE_DIR}/git-vars.sh"
 git fetch --all --prune --tags --force -j$(nproc)
-git checkout master
-git rebase apache/master
+git checkout ${DEFAULT_BRANCH}
+git rebase apache/${DEFAULT_BRANCH}
 git branch -D ${branch_name} || :
 git checkout -b ${branch_name}
 popd
@@ -55,7 +56,8 @@ else
   release_type=major
 fi
 
-release_date=$(LANG=C date "+%-d %B %Y")
+export TZ=UTC
+release_date=$(LC_TIME=C date "+%-d %B %Y")
 previous_tag_date=$(git log -n 1 --pretty=%aI apache-arrow-${previous_version})
 rough_previous_release_date=$(date --date "${previous_tag_date}" +%s)
 rough_release_date=$(date +%s)
@@ -66,7 +68,7 @@ rough_n_development_months=$((
 git_tag=apache-arrow-${version}
 git_range=apache-arrow-${previous_version}..${git_tag}
 
-committers_command_line="git shortlog -csn ${git_range}"
+committers_command_line="git shortlog -sn --group=trailer:signed-off-by ${git_range}"
 contributors_command_line="git shortlog -sn ${git_range}"
 
 committers=$(${committers_command_line})
@@ -262,7 +264,7 @@ current:
   mirrors: 'https://www.apache.org/dyn/closer.lua/arrow/arrow-${version}/'
   tarball-name: 'apache-arrow-${version}.tar.gz'
   tarball-url: 'https://www.apache.org/dyn/closer.lua?action=download&filename=arrow/arrow-${version}/apache-arrow-${version}.tar.gz'
-  java-artifacts: 'http://search.maven.org/#search%7Cga%7C1%7Cg%3A%22org.apache.arrow%22%20AND%20v%3A%22${version}%22'
+  java-artifacts: 'https://search.maven.org/#search%7Cga%7C1%7Cg%3A%22org.apache.arrow%22%20AND%20v%3A%22${version}%22'
   asc: '${apache_download_url}/arrow/arrow-${version}/apache-arrow-${version}.tar.gz.asc'
   sha256: '${apache_download_url}/arrow/arrow-${version}/apache-arrow-${version}.tar.gz.sha256'
   sha512: '${apache_download_url}/arrow/arrow-${version}/apache-arrow-${version}.tar.gz.sha512'

@@ -23,9 +23,9 @@ import (
 	"reflect"
 	"sync/atomic"
 
-	"github.com/apache/arrow/go/v7/arrow"
-	"github.com/apache/arrow/go/v7/arrow/internal/debug"
-	"github.com/apache/arrow/go/v7/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/internal/debug"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/goccy/go-json"
 )
 
@@ -45,6 +45,8 @@ func NewFixedSizeBinaryBuilder(mem memory.Allocator, dtype *arrow.FixedSizeBinar
 	}
 	return b
 }
+
+func (b *FixedSizeBinaryBuilder) Type() arrow.DataType { return b.dtype }
 
 // Release decreases the reference count by 1.
 // When the reference count goes to zero, the memory is freed.
@@ -79,6 +81,17 @@ func (b *FixedSizeBinaryBuilder) AppendNull() {
 	b.Reserve(1)
 	b.values.Advance(b.dtype.ByteWidth)
 	b.UnsafeAppendBoolToBitmap(false)
+}
+
+func (b *FixedSizeBinaryBuilder) AppendEmptyValue() {
+	b.Reserve(1)
+	b.values.Advance(b.dtype.ByteWidth)
+	b.UnsafeAppendBoolToBitmap(true)
+}
+
+func (b *FixedSizeBinaryBuilder) UnsafeAppend(v []byte) {
+	b.values.unsafeAppend(v)
+	b.UnsafeAppendBoolToBitmap(true)
 }
 
 // AppendValues will append the values in the v slice. The valid slice determines which values
@@ -127,7 +140,7 @@ func (b *FixedSizeBinaryBuilder) Resize(n int) {
 
 // NewArray creates a FixedSizeBinary array from the memory buffers used by the
 // builder and resets the FixedSizeBinaryBuilder so it can be used to build a new array.
-func (b *FixedSizeBinaryBuilder) NewArray() Interface {
+func (b *FixedSizeBinaryBuilder) NewArray() arrow.Array {
 	return b.NewFixedSizeBinaryArray()
 }
 

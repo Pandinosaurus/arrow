@@ -17,8 +17,14 @@
 
 add_arrow_example(row_wise_conversion_example)
 
+add_arrow_example(rapidjson_row_converter)
+
 if(ARROW_COMPUTE)
   add_arrow_example(compute_register_example)
+endif()
+
+if(ARROW_SUBSTRAIT)
+  add_arrow_example(engine_substrait_consumption EXTRA_LINK_LIBS arrow_substrait_shared)
 endif()
 
 if(ARROW_COMPUTE AND ARROW_CSV)
@@ -30,16 +36,24 @@ if(ARROW_FLIGHT)
   # we'll violate ODR for gRPC symbols
   if(ARROW_GRPC_USE_SHARED)
     set(FLIGHT_EXAMPLES_LINK_LIBS arrow_flight_shared)
-    # We don't directly use symbols from the reflection library, so
-    # ensure the linker still links to it
-    set(GRPC_REFLECTION_LINK_LIBS -Wl,--no-as-needed gRPC::grpc++_reflection
-                                  -Wl,--as-needed)
+    if(APPLE)
+      set(GRPC_REFLECTION_LINK_LIBS gRPC::grpc++_reflection)
+    else()
+      # We don't directly use symbols from the reflection library, so
+      # ensure the linker still links to it
+      set(GRPC_REFLECTION_LINK_LIBS -Wl,--no-as-needed gRPC::grpc++_reflection
+                                    -Wl,--as-needed)
+    endif()
   elseif(NOT ARROW_BUILD_STATIC)
     message(FATAL_ERROR "Statically built gRPC requires ARROW_BUILD_STATIC=ON")
   else()
     set(FLIGHT_EXAMPLES_LINK_LIBS arrow_flight_static)
-    set(GRPC_REFLECTION_LINK_LIBS -Wl,--whole-archive gRPC::grpc++_reflection
-                                  -Wl,--no-whole-archive)
+    if(APPLE)
+      set(GRPC_REFLECTION_LINK_LIBS -Wl,-force_load gRPC::grpc++_reflection)
+    else()
+      set(GRPC_REFLECTION_LINK_LIBS -Wl,--whole-archive gRPC::grpc++_reflection
+                                    -Wl,--no-whole-archive)
+    endif()
   endif()
 
   set(FLIGHT_EXAMPLE_GENERATED_PROTO_FILES
@@ -84,6 +98,32 @@ if(ARROW_FLIGHT)
                     EXTRA_SOURCES
                     "${CMAKE_CURRENT_BINARY_DIR}/helloworld.pb.cc"
                     "${CMAKE_CURRENT_BINARY_DIR}/helloworld.grpc.pb.cc")
+
+  if(ARROW_FLIGHT_SQL)
+    if(ARROW_GRPC_USE_SHARED)
+      set(FLIGHT_SQL_EXAMPLES_LINK_LIBS arrow_flight_sql_shared)
+    else()
+      set(FLIGHT_SQL_EXAMPLES_LINK_LIBS arrow_flight_sql_static)
+    endif()
+
+    add_arrow_example(flight_sql_example
+                      DEPENDENCIES
+                      flight-sql-test-server
+                      EXTRA_LINK_LIBS
+                      ${FLIGHT_EXAMPLES_LINK_LIBS}
+                      ${FLIGHT_SQL_EXAMPLES_LINK_LIBS}
+                      gRPC::grpc++
+                      ${ARROW_PROTOBUF_LIBPROTOBUF}
+                      ${GFLAGS_LIBRARIES})
+  endif()
+endif()
+
+if(ARROW_PARQUET)
+  if(ARROW_BUILD_SHARED)
+    add_arrow_example(parquet_read_write EXTRA_LINK_LIBS parquet_shared)
+  else()
+    add_arrow_example(parquet_read_write EXTRA_LINK_LIBS parquet_static)
+  endif()
 endif()
 
 if(ARROW_PARQUET AND ARROW_DATASET)
@@ -95,9 +135,37 @@ if(ARROW_PARQUET AND ARROW_DATASET)
 
   add_arrow_example(dataset_parquet_scan_example EXTRA_LINK_LIBS
                     ${DATASET_EXAMPLES_LINK_LIBS})
-  add_dependencies(dataset_parquet_scan_example parquet)
+  add_dependencies(dataset-parquet-scan-example parquet)
 
   add_arrow_example(dataset_documentation_example EXTRA_LINK_LIBS
                     ${DATASET_EXAMPLES_LINK_LIBS})
-  add_dependencies(dataset_documentation_example parquet)
+  add_dependencies(dataset-documentation-example parquet)
+
+  add_arrow_example(execution_plan_documentation_examples EXTRA_LINK_LIBS
+                    ${DATASET_EXAMPLES_LINK_LIBS})
+  add_dependencies(execution-plan-documentation-examples parquet)
+
+  if(ARROW_CSV)
+    add_arrow_example(join_example EXTRA_LINK_LIBS ${DATASET_EXAMPLES_LINK_LIBS})
+    add_dependencies(join-example parquet)
+  endif()
+
+  add_arrow_example(udf_example)
+
+  if(ARROW_SKYHOOK)
+    if(ARROW_BUILD_SHARED)
+      list(APPEND DATASET_EXAMPLES_LINK_LIBS arrow_skyhook_shared)
+    else()
+      list(APPEND DATASET_EXAMPLES_LINK_LIBS arrow_skyhook_static)
+    endif()
+
+    add_arrow_example(dataset_skyhook_scan_example EXTRA_LINK_LIBS
+                      ${DATASET_EXAMPLES_LINK_LIBS})
+    add_dependencies(dataset-skyhook-scan-example parquet)
+  endif()
+
+endif()
+
+if(ARROW_GANDIVA)
+  add_arrow_example(gandiva_example EXTRA_LINK_LIBS gandiva_shared)
 endif()

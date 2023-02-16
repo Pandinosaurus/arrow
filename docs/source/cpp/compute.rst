@@ -19,6 +19,8 @@
 .. highlight:: cpp
 .. cpp:namespace:: arrow::compute
 
+.. _compute-cpp:
+
 =================
 Compute Functions
 =================
@@ -97,6 +99,9 @@ exact semantics of the function::
    std::shared_ptr<arrow::Scalar> min_value, max_value;
    min_value = min_max.scalar_as<arrow::StructScalar>().value[0];
    max_value = min_max.scalar_as<arrow::StructScalar>().value[1];
+
+However, :ref:`Grouped Aggregations <grouped-aggregations-group-by>` are
+not invocable via ``CallFunction``.
 
 .. seealso::
    :doc:`Compute API reference <api/compute>`
@@ -184,49 +189,53 @@ If you are unsure whether a function supports a concrete input type, we
 recommend you try it out.  Unsupported input types return a ``TypeError``
 :class:`Status`.
 
+.. _aggregation-option-list:
+
 Aggregations
 ------------
 
 Scalar aggregations operate on a (chunked) array or scalar value and reduce
 the input to a single output value.
 
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| Function name      | Arity | Input types      | Output type            | Options class                    | Notes |
-+====================+=======+==================+========================+==================================+=======+
-| all                | Unary | Boolean          | Scalar Boolean         | :struct:`ScalarAggregateOptions` | \(1)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| any                | Unary | Boolean          | Scalar Boolean         | :struct:`ScalarAggregateOptions` | \(1)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| approximate_median | Unary | Numeric          | Scalar Float64         | :struct:`ScalarAggregateOptions` |       |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| count              | Unary | Any              | Scalar Int64           | :struct:`CountOptions`           | \(2)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| count_distinct     | Unary | Non-nested types | Scalar Int64           | :struct:`CountOptions`           | \(2)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| index              | Unary | Any              | Scalar Int64           | :struct:`IndexOptions`           | \(3)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| max                | Unary | Non-nested types | Scalar Input type      | :struct:`ScalarAggregateOptions` |       |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| mean               | Unary | Numeric          | Scalar Decimal/Float64 | :struct:`ScalarAggregateOptions` | \(4)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| min                | Unary | Non-nested types | Scalar Input type      | :struct:`ScalarAggregateOptions` |       |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| min_max            | Unary | Non-nested types | Scalar Struct          | :struct:`ScalarAggregateOptions` | \(5)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| mode               | Unary | Numeric          | Struct                 | :struct:`ModeOptions`            | \(6)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| product            | Unary | Numeric          | Scalar Numeric         | :struct:`ScalarAggregateOptions` | \(7)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| quantile           | Unary | Numeric          | Scalar Numeric         | :struct:`QuantileOptions`        | \(8)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| stddev             | Unary | Numeric          | Scalar Float64         | :struct:`VarianceOptions`        | \(9)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| sum                | Unary | Numeric          | Scalar Numeric         | :struct:`ScalarAggregateOptions` | \(7)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| tdigest            | Unary | Numeric          | Float64                | :struct:`TDigestOptions`         | \(10) |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
-| variance           | Unary | Numeric          | Scalar Float64         | :struct:`VarianceOptions`        | \(9)  |
-+--------------------+-------+------------------+------------------------+----------------------------------+-------+
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| Function name      | Arity   | Input types      | Output type            | Options class                    | Notes |
++====================+=========+==================+========================+==================================+=======+
+| all                | Unary   | Boolean          | Scalar Boolean         | :struct:`ScalarAggregateOptions` | \(1)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| any                | Unary   | Boolean          | Scalar Boolean         | :struct:`ScalarAggregateOptions` | \(1)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| approximate_median | Unary   | Numeric          | Scalar Float64         | :struct:`ScalarAggregateOptions` |       |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| count              | Unary   | Any              | Scalar Int64           | :struct:`CountOptions`           | \(2)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| count_all          | Nullary |                  | Scalar Int64           |                                  |       |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| count_distinct     | Unary   | Non-nested types | Scalar Int64           | :struct:`CountOptions`           | \(2)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| index              | Unary   | Any              | Scalar Int64           | :struct:`IndexOptions`           | \(3)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| max                | Unary   | Non-nested types | Scalar Input type      | :struct:`ScalarAggregateOptions` |       |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| mean               | Unary   | Numeric          | Scalar Decimal/Float64 | :struct:`ScalarAggregateOptions` | \(4)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| min                | Unary   | Non-nested types | Scalar Input type      | :struct:`ScalarAggregateOptions` |       |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| min_max            | Unary   | Non-nested types | Scalar Struct          | :struct:`ScalarAggregateOptions` | \(5)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| mode               | Unary   | Numeric          | Struct                 | :struct:`ModeOptions`            | \(6)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| product            | Unary   | Numeric          | Scalar Numeric         | :struct:`ScalarAggregateOptions` | \(7)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| quantile           | Unary   | Numeric          | Scalar Numeric         | :struct:`QuantileOptions`        | \(8)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| stddev             | Unary   | Numeric          | Scalar Float64         | :struct:`VarianceOptions`        | \(9)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| sum                | Unary   | Numeric          | Scalar Numeric         | :struct:`ScalarAggregateOptions` | \(7)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| tdigest            | Unary   | Numeric          | Float64                | :struct:`TDigestOptions`         | \(10) |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
+| variance           | Unary   | Numeric          | Scalar Float64         | :struct:`VarianceOptions`        | \(9)  |
++--------------------+---------+------------------+------------------------+----------------------------------+-------+
 
 * \(1) If null values are taken into account, by setting the
   ScalarAggregateOptions parameter skip_nulls = false, then `Kleene logic`_
@@ -265,6 +274,8 @@ the input to a single output value.
   <https://github.com/tdunning/t-digest>`_ for details.
 
   Decimal arguments are cast to Float64 first.
+
+.. _grouped-aggregations-group-by:
 
 Grouped Aggregations ("group by")
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -312,39 +323,45 @@ The supported aggregation functions are as follows. All function names are
 prefixed with ``hash_``, which differentiates them from their scalar
 equivalents above and reflects how they are implemented internally.
 
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| Function name           | Arity | Input types                        | Output type            | Options class                    | Notes |
-+=========================+=======+====================================+========================+==================================+=======+
-| hash_all                | Unary | Boolean                            | Boolean                | :struct:`ScalarAggregateOptions` | \(1)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_any                | Unary | Boolean                            | Boolean                | :struct:`ScalarAggregateOptions` | \(1)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_approximate_median | Unary | Numeric                            | Float64                | :struct:`ScalarAggregateOptions` |       |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_count              | Unary | Any                                | Int64                  | :struct:`CountOptions`           | \(2)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_count_distinct     | Unary | Any                                | Int64                  | :struct:`CountOptions`           | \(2)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_distinct           | Unary | Any                                | Input type             | :struct:`CountOptions`           | \(2)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_max                | Unary | Non-nested, non-binary/string-like | Input type             | :struct:`ScalarAggregateOptions` |       |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_mean               | Unary | Numeric                            | Decimal/Float64        | :struct:`ScalarAggregateOptions` | \(3)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_min                | Unary | Non-nested, non-binary/string-like | Input type             | :struct:`ScalarAggregateOptions` |       |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_min_max            | Unary | Non-nested types                   | Struct                 | :struct:`ScalarAggregateOptions` | \(4)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_product            | Unary | Numeric                            | Numeric                | :struct:`ScalarAggregateOptions` | \(5)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_stddev             | Unary | Numeric                            | Float64                | :struct:`VarianceOptions`        | \(6)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_sum                | Unary | Numeric                            | Numeric                | :struct:`ScalarAggregateOptions` | \(5)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_tdigest            | Unary | Numeric                            | FixedSizeList[Float64] | :struct:`TDigestOptions`         | \(7)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
-| hash_variance           | Unary | Numeric                            | Float64                | :struct:`VarianceOptions`        | \(6)  |
-+-------------------------+-------+------------------------------------+------------------------+----------------------------------+-------+
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| Function name           | Arity   | Input types                        | Output type            | Options class                    | Notes     |
++=========================+=========+====================================+========================+==================================+===========+
+| hash_all                | Unary   | Boolean                            | Boolean                | :struct:`ScalarAggregateOptions` | \(1)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_any                | Unary   | Boolean                            | Boolean                | :struct:`ScalarAggregateOptions` | \(1)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_approximate_median | Unary   | Numeric                            | Float64                | :struct:`ScalarAggregateOptions` |           |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_count              | Unary   | Any                                | Int64                  | :struct:`CountOptions`           | \(2)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_count_all          | Nullary |                                    | Int64                  |                                  |           |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_count_distinct     | Unary   | Any                                | Int64                  | :struct:`CountOptions`           | \(2)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_distinct           | Unary   | Any                                | List of input type     | :struct:`CountOptions`           | \(2) \(3) |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_list               | Unary   | Any                                | List of input type     |                                  | \(3)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_max                | Unary   | Non-nested, non-binary/string-like | Input type             | :struct:`ScalarAggregateOptions` |           |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_mean               | Unary   | Numeric                            | Decimal/Float64        | :struct:`ScalarAggregateOptions` | \(4)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_min                | Unary   | Non-nested, non-binary/string-like | Input type             | :struct:`ScalarAggregateOptions` |           |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_min_max            | Unary   | Non-nested types                   | Struct                 | :struct:`ScalarAggregateOptions` | \(5)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_one                | Unary   | Any                                | Input type             |                                  | \(6)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_product            | Unary   | Numeric                            | Numeric                | :struct:`ScalarAggregateOptions` | \(7)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_stddev             | Unary   | Numeric                            | Float64                | :struct:`VarianceOptions`        | \(8)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_sum                | Unary   | Numeric                            | Numeric                | :struct:`ScalarAggregateOptions` | \(7)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_tdigest            | Unary   | Numeric                            | FixedSizeList[Float64] | :struct:`TDigestOptions`         | \(9)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
+| hash_variance           | Unary   | Numeric                            | Float64                | :struct:`VarianceOptions`        | \(8)      |
++-------------------------+---------+------------------------------------+------------------------+----------------------------------+-----------+
 
 * \(1) If null values are taken into account, by setting the
   :member:`ScalarAggregateOptions::skip_nulls` to false, then `Kleene logic`_
@@ -356,20 +373,28 @@ equivalents above and reflects how they are implemented internally.
   are emitted. This never affects the grouping keys, only group values
   (i.e. you may get a group where the key is null).
 
-* \(3) For decimal inputs, the resulting decimal will have the same
+* \(3) ``hash_distinct`` and ``hash_list`` gather the grouped values
+  into a list array.
+
+* \(4) For decimal inputs, the resulting decimal will have the same
   precision and scale. The result is rounded away from zero.
 
-* \(4) Output is a ``{"min": input type, "max": input type}`` Struct array.
+* \(5) Output is a ``{"min": input type, "max": input type}`` Struct array.
 
   Of the interval types, only the month interval is supported, as the day-time
   and month-day-nano types are not sortable.
 
-* \(5) Output is Int64, UInt64, Float64, or Decimal128/256, depending on the
+* \(6) ``hash_one`` returns one arbitrary value from the input for each
+  group. The function is biased towards non-null values: if there is at least
+  one non-null value for a certain group, that value is returned, and only if
+  all the values are ``null`` for the group will the function return ``null``.
+
+* \(7) Output is Int64, UInt64, Float64, or Decimal128/256, depending on the
   input type.
 
-* \(6) Decimal arguments are cast to Float64 first.
+* \(8) Decimal arguments are cast to Float64 first.
 
-* \(7) T-digest computes approximate quantiles, and so only needs a
+* \(9) T-digest computes approximate quantiles, and so only needs a
   fixed amount of memory. See the `reference implementation
   <https://github.com/tdunning/t-digest>`_ for details.
 
@@ -414,40 +439,47 @@ For functions which support decimal inputs (currently ``add``, ``subtract``,
 precisions/scales will be promoted appropriately. Mixed decimal and
 floating-point arguments will cast all arguments to floating-point, while mixed
 decimal and integer arguments will cast all arguments to decimals.
+Mixed time resolution temporal inputs will be cast to finest input resolution.
 
-+------------------+--------+----------------+----------------------+-------+
-| Function name    | Arity  | Input types    | Output type          | Notes |
-+==================+========+================+======================+=======+
-| abs              | Unary  | Numeric        | Numeric              |       |
-+------------------+--------+----------------+----------------------+-------+
-| abs_checked      | Unary  | Numeric        | Numeric              |       |
-+------------------+--------+----------------+----------------------+-------+
-| add              | Binary | Numeric        | Numeric              | \(1)  |
-+------------------+--------+----------------+----------------------+-------+
-| add_checked      | Binary | Numeric        | Numeric              | \(1)  |
-+------------------+--------+----------------+----------------------+-------+
-| divide           | Binary | Numeric        | Numeric              | \(1)  |
-+------------------+--------+----------------+----------------------+-------+
-| divide_checked   | Binary | Numeric        | Numeric              | \(1)  |
-+------------------+--------+----------------+----------------------+-------+
-| multiply         | Binary | Numeric        | Numeric              | \(1)  |
-+------------------+--------+----------------+----------------------+-------+
-| multiply_checked | Binary | Numeric        | Numeric              | \(1)  |
-+------------------+--------+----------------+----------------------+-------+
-| negate           | Unary  | Numeric        | Numeric              |       |
-+------------------+--------+----------------+----------------------+-------+
-| negate_checked   | Unary  | Signed Numeric | Signed Numeric       |       |
-+------------------+--------+----------------+----------------------+-------+
-| power            | Binary | Numeric        | Numeric              |       |
-+------------------+--------+----------------+----------------------+-------+
-| power_checked    | Binary | Numeric        | Numeric              |       |
-+------------------+--------+----------------+----------------------+-------+
-| sign             | Unary  | Numeric        | Int8/Float32/Float64 | \(2)  |
-+------------------+--------+----------------+----------------------+-------+
-| subtract         | Binary | Numeric        | Numeric              | \(1)  |
-+------------------+--------+----------------+----------------------+-------+
-| subtract_checked | Binary | Numeric        | Numeric              | \(1)  |
-+------------------+--------+----------------+----------------------+-------+
++------------------+--------+-------------------------+----------------------+-------+
+| Function name    | Arity  | Input types             | Output type          | Notes |
++==================+========+=========================+======================+=======+
+| abs              | Unary  | Numeric                 | Numeric              |       |
++------------------+--------+-------------------------+----------------------+-------+
+| abs_checked      | Unary  | Numeric                 | Numeric              |       |
++------------------+--------+-------------------------+----------------------+-------+
+| add              | Binary | Numeric/Temporal        | Numeric/Temporal     | \(1)  |
++------------------+--------+-------------------------+----------------------+-------+
+| add_checked      | Binary | Numeric/Temporal        | Numeric/Temporal     | \(1)  |
++------------------+--------+-------------------------+----------------------+-------+
+| divide           | Binary | Numeric/Temporal        | Numeric/Temporal     | \(1)  |
++------------------+--------+-------------------------+----------------------+-------+
+| divide_checked   | Binary | Numeric/Temporal        | Numeric/Temporal     | \(1)  |
++------------------+--------+-------------------------+----------------------+-------+
+| exp              | Unary  | Numeric                 | Float32/Float64      |       |
++------------------+--------+-------------------------+----------------------+-------+
+| multiply         | Binary | Numeric/Temporal        | Numeric/Temporal     | \(1)  |
++------------------+--------+-------------------------+----------------------+-------+
+| multiply_checked | Binary | Numeric/Temporal        | Numeric/Temporal     | \(1)  |
++------------------+--------+-------------------------+----------------------+-------+
+| negate           | Unary  | Numeric                 | Numeric              |       |
++------------------+--------+-------------------------+----------------------+-------+
+| negate_checked   | Unary  | Signed Numeric          | Signed Numeric       |       |
++------------------+--------+-------------------------+----------------------+-------+
+| power            | Binary | Numeric                 | Numeric              |       |
++------------------+--------+-------------------------+----------------------+-------+
+| power_checked    | Binary | Numeric                 | Numeric              |       |
++------------------+--------+-------------------------+----------------------+-------+
+| sign             | Unary  | Numeric                 | Int8/Float32/Float64 | \(2)  |
++------------------+--------+-------------------------+----------------------+-------+
+| sqrt             | Unary  | Numeric                 | Numeric              |       |
++------------------+--------+-------------------------+----------------------+-------+
+| sqrt_checked     | Unary  | Numeric                 | Numeric              |       |
++------------------+--------+-------------------------+----------------------+-------+
+| subtract         | Binary | Numeric/Temporal        | Numeric/Temporal     | \(1)  |
++------------------+--------+-------------------------+----------------------+-------+
+| subtract_checked | Binary | Numeric/Temporal        | Numeric/Temporal     | \(1)  |
++------------------+--------+-------------------------+----------------------+-------+
 
 * \(1) Precision and scale of computed DECIMAL results
 
@@ -696,13 +728,14 @@ expanded for the purposes of comparison.
 +------------------+------------+---------------------------------------------+---------------------+---------------------------------------+-------+
 | Function names   | Arity      | Input types                                 | Output type         | Options class                         | Notes |
 +==================+============+=============================================+=====================+=======================================+=======+
-| max_element_wise | Varargs    | Numeric and Temporal                        | Numeric or Temporal | :struct:`ElementWiseAggregateOptions` | \(1)  |
+| max_element_wise | Varargs    | Numeric, Temporal, Binary- and String-like  | Numeric or Temporal | :struct:`ElementWiseAggregateOptions` | \(1)  |
 +------------------+------------+---------------------------------------------+---------------------+---------------------------------------+-------+
-| min_element_wise | Varargs    | Numeric and Temporal                        | Numeric or Temporal | :struct:`ElementWiseAggregateOptions` | \(1)  |
+| min_element_wise | Varargs    | Numeric, Temporal, Binary- and String-like  | Numeric or Temporal | :struct:`ElementWiseAggregateOptions` | \(1)  |
 +------------------+------------+---------------------------------------------+---------------------+---------------------------------------+-------+
 
 * \(1) By default, nulls are skipped (but the kernel can be configured to propagate nulls).
   For floating point values, NaN will be taken over null but not over any other value.
+  For binary- and string-like values, only identical type parameters are supported.
 
 Logical functions
 ~~~~~~~~~~~~~~~~~~
@@ -851,25 +884,27 @@ String transforms
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
 | binary_replace_slice    | Unary  | String-like                             | Binary- or String-like | :struct:`ReplaceSliceOptions`     | \(5)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| replace_substring       | Unary  | String-like                             | String-like            | :struct:`ReplaceSubstringOptions` | \(6)  |
+| binary_reverse          | Unary  | Binary                                  | Binary                 |                                   | \(6)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| replace_substring_regex | Unary  | String-like                             | String-like            | :struct:`ReplaceSubstringOptions` | \(7)  |
+| replace_substring       | Unary  | String-like                             | String-like            | :struct:`ReplaceSubstringOptions` | \(7)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| utf8_capitalize         | Unary  | String-like                             | String-like            |                                   | \(8)  |
+| replace_substring_regex | Unary  | String-like                             | String-like            | :struct:`ReplaceSubstringOptions` | \(8)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| utf8_length             | Unary  | String-like                             | Int32 or Int64         |                                   | \(9)  |
+| utf8_capitalize         | Unary  | String-like                             | String-like            |                                   | \(9)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| utf8_lower              | Unary  | String-like                             | String-like            |                                   | \(8)  |
+| utf8_length             | Unary  | String-like                             | Int32 or Int64         |                                   | \(10) |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| utf8_replace_slice      | Unary  | String-like                             | String-like            | :struct:`ReplaceSliceOptions`     | \(6)  |
+| utf8_lower              | Unary  | String-like                             | String-like            |                                   | \(9)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| utf8_reverse            | Unary  | String-like                             | String-like            |                                   | \(10) |
+| utf8_replace_slice      | Unary  | String-like                             | String-like            | :struct:`ReplaceSliceOptions`     | \(7)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| utf8_swapcase           | Unary  | String-like                             | String-like            |                                   | \(8)  |
+| utf8_reverse            | Unary  | String-like                             | String-like            |                                   | \(11) |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| utf8_title              | Unary  | String-like                             | String-like            |                                   | \(8)  |
+| utf8_swapcase           | Unary  | String-like                             | String-like            |                                   | \(9)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
-| utf8_upper              | Unary  | String-like                             | String-like            |                                   | \(8)  |
+| utf8_title              | Unary  | String-like                             | String-like            |                                   | \(9)  |
++-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
+| utf8_upper              | Unary  | String-like                             | String-like            |                                   | \(9)  |
 +-------------------------+--------+-----------------------------------------+------------------------+-----------------------------------+-------+
 
 * \(1) Each ASCII character in the input is converted to lowercase or
@@ -888,26 +923,28 @@ String transforms
   :member:`ReplaceSubstringOptions::replacement`. The binary kernel measures the
   slice in bytes, while the UTF8 kernel measures the slice in codeunits.
 
-* \(6) Replace non-overlapping substrings that match to
+* \(6) Perform a byte-level reverse.
+
+* \(7) Replace non-overlapping substrings that match to
   :member:`ReplaceSubstringOptions::pattern` by
   :member:`ReplaceSubstringOptions::replacement`. If
   :member:`ReplaceSubstringOptions::max_replacements` != -1, it determines the
   maximum number of replacements made, counting from the left.
 
-* \(7) Replace non-overlapping substrings that match to the regular expression
+* \(8) Replace non-overlapping substrings that match to the regular expression
   :member:`ReplaceSubstringOptions::pattern` by
   :member:`ReplaceSubstringOptions::replacement`, using the Google RE2 library. If
   :member:`ReplaceSubstringOptions::max_replacements` != -1, it determines the
   maximum number of replacements made, counting from the left. Note that if the
   pattern contains groups, backreferencing can be used.
 
-* \(8) Each UTF8-encoded character in the input is converted to lowercase or
+* \(9) Each UTF8-encoded character in the input is converted to lowercase or
   uppercase.
 
-* \(9) Output is the number of characters (not bytes) of each input element.
+* \(10) Output is the number of characters (not bytes) of each input element.
   Output type is Int32 for String, Int64 for LargeString.
 
-* \(10) Each UTF8-encoded code unit is written in reverse order to the output.
+* \(11) Each UTF8-encoded code unit is written in reverse order to the output.
   If the input is not valid UTF8, then the output is undefined (but the size of output
   buffers will be preserved).
 
@@ -1058,13 +1095,18 @@ semantics follow Python slicing semantics: the start index is inclusive,
 the stop index exclusive; if the step is negative, the sequence is followed
 in reverse order.
 
-+--------------------------+------------+----------------+-----------------+--------------------------+---------+
-| Function name            | Arity      | Input types    | Output type     | Options class            | Notes   |
-+==========================+============+================+=================+==========================+=========+
-| utf8_slice_codeunits     | Unary      | String-like    | String-like     | :struct:`SliceOptions`   | \(1)    |
-+--------------------------+------------+----------------+-----------------+--------------------------+---------+
++--------------------------+------------+-------------------------+-------------------------+--------------------------+---------+
+| Function name            | Arity      | Input types             | Output type             | Options class            | Notes   |
++==========================+============+=========================+=========================+==========================+=========+
+| binary_slice             | Unary      | Binary-like             | Binary-like             | :struct:`SliceOptions`   | \(1)    |
++--------------------------+------------+-------------------------+-------------------------+--------------------------+---------+
+| utf8_slice_codeunits     | Unary      | String-like             | String-like             | :struct:`SliceOptions`   | \(2)    |
++--------------------------+------------+-------------------------+-------------------------+--------------------------+---------+
 
 * \(1) Slice string into a substring defined by (``start``, ``stop``, ``step``)
+  as given by :struct:`SliceOptions` where ``start`` and ``stop`` are measured
+  in bytes. Null inputs emit null.
+* \(2) Slice string into a substring defined by (``start``, ``stop``, ``step``)
   as given by :struct:`SliceOptions` where ``start`` and ``stop`` are measured
   in codeunits. Null inputs emit null.
 
@@ -1148,6 +1190,8 @@ Categorizations
 +-------------------+------------+-------------------------+---------------------+------------------------+---------+
 | is_valid          | Unary      | Any                     | Boolean             |                        | \(5)    |
 +-------------------+------------+-------------------------+---------------------+------------------------+---------+
+| true_unless_null  | Unary      | Any                     | Boolean             |                        | \(6)    |
++-------------------+------------+-------------------------+---------------------+------------------------+---------+
 
 * \(1) Output is true iff the corresponding input element is finite (neither Infinity,
   -Infinity, nor NaN). Hence, for Decimal and integer inputs this always returns true.
@@ -1161,7 +1205,10 @@ Categorizations
 * \(4) Output is true iff the corresponding input element is null. NaN values
   can also be considered null by setting :member:`NullOptions::nan_is_null`.
 
-* \(5) Output is true iff the corresponding input element is non-null.
+* \(5) Output is true iff the corresponding input element is non-null, else false.
+
+* \(6) Output is true iff the corresponding input element is non-null, else null.
+       Mostly intended for expression simplification/guarantees.
 
 .. _cpp-compute-scalar-selections:
 
@@ -1242,15 +1289,21 @@ number of input and output types.  The type to cast to can be passed in a
 :struct:`CastOptions` instance.  As an alternative, the same service is
 provided by a concrete function :func:`~arrow::compute::Cast`.
 
-+-----------------+------------+--------------------+------------------+------------------------------+-------+
-| Function name   | Arity      | Input types        | Output type      | Options class                | Notes |
-+=================+============+====================+==================+==============================+=======+
-| cast            | Unary      | Many               | Variable         | :struct:`CastOptions`        |       |
-+-----------------+------------+--------------------+------------------+------------------------------+-------+
-| strftime        | Unary      | Temporal           | String           | :struct:`StrftimeOptions`    | \(1)  |
-+-----------------+------------+--------------------+------------------+------------------------------+-------+
-| strptime        | Unary      | String-like        | Timestamp        | :struct:`StrptimeOptions`    |       |
-+-----------------+------------+--------------------+------------------+------------------------------+-------+
++-----------------+------------+--------------------+------------------+--------------------------------+-------+
+| Function name   | Arity      | Input types        | Output type      | Options class                  | Notes |
++=================+============+====================+==================+================================+=======+
+| ceil_temporal   | Unary      | Temporal           | Temporal         | :struct:`RoundTemporalOptions` |       |
++-----------------+------------+--------------------+------------------+--------------------------------+-------+
+| floor_temporal  | Unary      | Temporal           | Temporal         | :struct:`RoundTemporalOptions` |       |
++-----------------+------------+--------------------+------------------+--------------------------------+-------+
+| round_temporal  | Unary      | Temporal           | Temporal         | :struct:`RoundTemporalOptions` |       |
++-----------------+------------+--------------------+------------------+--------------------------------+-------+
+| cast            | Unary      | Many               | Variable         | :struct:`CastOptions`          |       |
++-----------------+------------+--------------------+------------------+--------------------------------+-------+
+| strftime        | Unary      | Temporal           | String           | :struct:`StrftimeOptions`      | \(1)  |
++-----------------+------------+--------------------+------------------+--------------------------------+-------+
+| strptime        | Unary      | String-like        | Timestamp        | :struct:`StrptimeOptions`      |       |
++-----------------+------------+--------------------+------------------+--------------------------------+-------+
 
 The conversions available with ``cast`` are listed below.  In all cases, a
 null input value is converted into a null output value.
@@ -1333,18 +1386,37 @@ null input value is converted into a null output value.
 +-----------------------------+------------------------------------+---------+
 | Extension                   | Extension storage type             |         |
 +-----------------------------+------------------------------------+---------+
-| List-like                   | List-like                          | \(2)    |
+| Struct                      | Struct                             | \(2)    |
++-----------------------------+------------------------------------+---------+
+| List-like                   | List-like                          | \(3)    |
++-----------------------------+------------------------------------+---------+
+| Map                         | Map or List of two-field struct    | \(4)    |
 +-----------------------------+------------------------------------+---------+
 | Null                        | Any                                |         |
++-----------------------------+------------------------------------+---------+
+| Any                         | Extension                          | \(5)    |
 +-----------------------------+------------------------------------+---------+
 
 * \(1) The dictionary indices are unchanged, the dictionary values are
   cast from the input value type to the output value type (if a conversion
   is available).
 
-* \(2) The list offsets are unchanged, the list values are cast from the
+* \(2) The field names of the output type must be the same or a subset of the
+  field names of the input type; they also must have the same order. Casting to
+  a subset of field names "selects" those fields such that each output field
+  matches the data of the input field with the same name.
+
+* \(3) The list offsets are unchanged, the list values are cast from the
   input value type to the output value type (if a conversion is
   available).
+
+* \(4) Offsets are unchanged, the keys and values are cast from respective input
+  to output types (if a conversion is available). If output type is a list of
+  struct, the key field is output as the first field and the value field the 
+  second field, regardless of field names chosen.
+
+* \(5) Any input type that can be cast to the resulting extension's storage type.
+  This excludes extension types, unless being cast to the same extension type.
 
 Temporal component extraction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1363,11 +1435,15 @@ For timestamps inputs with non-empty timezone, localized timestamp components wi
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 | hour               | Unary      | Timestamp, Time   | Int64         |                            |       |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
+| is_dst             | Unary      | Timestamp         | Boolean       |                            |       |
++--------------------+------------+-------------------+---------------+----------------------------+-------+
 | iso_week           | Unary      | Temporal          | Int64         |                            | \(2)  |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 | iso_year           | Unary      | Temporal          | Int64         |                            | \(2)  |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 | iso_calendar       | Unary      | Temporal          | Struct        |                            | \(3)  |
++--------------------+------------+-------------------+---------------+----------------------------+-------+
+| is_leap_year       | Unary      | Timestamp, Date   | Boolean       |                            |       |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 | microsecond        | Unary      | Timestamp, Time   | Int64         |                            |       |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
@@ -1383,13 +1459,17 @@ For timestamps inputs with non-empty timezone, localized timestamp components wi
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 | second             | Unary      | Timestamp, Time   | Int64         |                            |       |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
-| subsecond          | Unary      | Timestamp, Time   | Double        |                            |       |
+| subsecond          | Unary      | Timestamp, Time   | Float64       |                            |       |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 | us_week            | Unary      | Temporal          | Int64         |                            | \(4)  |
++--------------------+------------+-------------------+---------------+----------------------------+-------+
+| us_year            | Unary      | Temporal          | Int64         |                            | \(4)  |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 | week               | Unary      | Timestamp         | Int64         | :struct:`WeekOptions`      | \(5)  |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 | year               | Unary      | Temporal          | Int64         |                            |       |
++--------------------+------------+-------------------+---------------+----------------------------+-------+
+| year_month_day     | Unary      | Temporal          | Struct        |                            | \(6)  |
 +--------------------+------------+-------------------+---------------+----------------------------+-------+
 
 * \(1) Outputs the number of the day of the week. By default week begins on Monday
@@ -1413,6 +1493,8 @@ For timestamps inputs with non-empty timezone, localized timestamp components wi
   of the previous year are numbered as week 0, else week 52 or 53 if false.
   If :member:`WeekOptions::first_week_is_fully_in_year` is true, the first week (week 1) must fully be in January;
   else if false, a week that begins on December 29, 30, or 31 is considered the first week of the new year.
+
+* \(6) Output is a ``{"year": int64(), "month": int64(), "day": int64()}`` Struct.
 
 .. _ISO 8601 week date definition: https://en.wikipedia.org/wiki/ISO_week_date#First_week
 
@@ -1484,8 +1566,49 @@ An error is returned if the timestamps already have the timezone metadata set.
   allows choosing the behaviour when a timestamp is ambiguous or nonexistent
   in the given timezone (because of DST shifts).
 
+Random number generation
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+This function generates an array of uniformly-distributed double-precision numbers
+in range [0, 1). The options provide the length of the output and the algorithm for
+generating the random numbers, using either a seed or a system-provided, platform-specific
+random generator.
+
++--------------------+------------+---------------+-------------------------+
+| Function name      | Arity      | Output type   | Options class           |
++====================+============+===============+=========================+
+| random             | Nullary    | Float64       | :struct:`RandomOptions` |
++--------------------+------------+---------------+-------------------------+
+
+
 Array-wise ("vector") functions
 -------------------------------
+
+Cumulative Functions
+~~~~~~~~~~~~~~~~~~~~
+
+Cumulative functions are vector functions that perform a running total on their
+input using an given binary associatve operation and output an array containing
+the corresponding intermediate running values. The input is expected to be of
+numeric type. By default these functions do not detect overflow. They are also
+available in an overflow-checking variant, suffixed ``_checked``, which returns
+an ``Invalid`` :class:`Status` when overflow is detected.
+
++------------------------+-------+-------------+-------------+--------------------------------+-------+
+| Function name          | Arity | Input types | Output type | Options class                  | Notes |
++========================+=======+=============+=============+================================+=======+
+| cumulative_sum         | Unary | Numeric     | Numeric     | :struct:`CumulativeSumOptions` | \(1)  |
++------------------------+-------+-------------+-------------+--------------------------------+-------+
+| cumulative_sum_checked | Unary | Numeric     | Numeric     | :struct:`CumulativeSumOptions` | \(1)  |
++------------------------+-------+-------------+-------------+--------------------------------+-------+
+
+* \(1) CumulativeSumOptions has two optional parameters. The first parameter
+  :member:`CumulativeSumOptions::start` is a starting value for the running
+  sum. It has a default value of 0. Specified values of ``start`` must have the
+  same type as the input. The second parameter 
+  :member:`CumulativeSumOptions::skip_nulls` is a boolean. When set to
+  false (the default), the first encountered null is propagated. When set to
+  true, each null in the input produces a corresponding null in the output.
 
 Associative transforms
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -1522,7 +1645,7 @@ These functions select and return a subset of their input.
 +===============+========+==============+==============+==============+=========================+===========+
 | array_filter  | Binary | Any          | Boolean      | Input type 1 | :struct:`FilterOptions` | \(1) \(3) |
 +---------------+--------+--------------+--------------+--------------+-------------------------+-----------+
-| array_take    | Binary | Any          | Boolean      | Input type 1 | :struct:`TakeOptions`   | \(1) \(4) |
+| array_take    | Binary | Any          | Integer      | Input type 1 | :struct:`TakeOptions`   | \(1) \(4) |
 +---------------+--------+--------------+--------------+--------------+-------------------------+-----------+
 | drop_null     | Unary  | Any          | -            | Input type 1 |                         | \(1) \(2) |
 +---------------+--------+--------------+--------------+--------------+-------------------------+-----------+
@@ -1544,6 +1667,17 @@ These functions select and return a subset of their input.
 * \(4) For each element *i* in input 2 (the indices), the *i*'th element
   in input 1 (the values) is appended to the output.
 
+Containment tests
+~~~~~~~~~~~~~~~~~
+
+This function returns the indices at which array elements are non-null and non-zero.
+
++-----------------------+-------+-----------------------------------+----------------+---------------------------------+-------+
+| Function name         | Arity | Input types                       | Output type    | Options class                   | Notes |
++=======================+=======+===================================+================+=================================+=======+
+| indices_nonzero       | Unary | Boolean, Null, Numeric, Decimal   | UInt64         |                                 |       |
++-----------------------+-------+-----------------------------------+----------------+---------------------------------+-------+
+
 Sorts and partitions
 ~~~~~~~~~~~~~~~~~~~~
 
@@ -1564,10 +1698,13 @@ in the respective option classes.
 +-----------------------+------------+---------------------------------------------------------+-------------------+--------------------------------+----------------+
 | partition_nth_indices | Unary      | Boolean, Numeric, Temporal, Binary- and String-like     | UInt64            | :struct:`PartitionNthOptions`  | \(3)           |
 +-----------------------+------------+---------------------------------------------------------+-------------------+--------------------------------+----------------+
-| select_k_unstable     | Unary      | Boolean, Numeric, Temporal, Binary- and String-like     | UInt64            | :struct:`SelectKOptions`       | \(4) \(5)      |
+| rank                  | Unary      | Boolean, Numeric, Temporal, Binary- and String-like     | UInt64            | :struct:`RankOptions`          | \(4)           |
 +-----------------------+------------+---------------------------------------------------------+-------------------+--------------------------------+----------------+
-| sort_indices          | Unary      | Boolean, Numeric, Temporal, Binary- and String-like     | UInt64            | :struct:`SortOptions`          | \(1) \(4)      |
+| select_k_unstable     | Unary      | Boolean, Numeric, Temporal, Binary- and String-like     | UInt64            | :struct:`SelectKOptions`       | \(5) \(6)      |
 +-----------------------+------------+---------------------------------------------------------+-------------------+--------------------------------+----------------+
+| sort_indices          | Unary      | Boolean, Numeric, Temporal, Binary- and String-like     | UInt64            | :struct:`SortOptions`          | \(1) \(5)      |
++-----------------------+------------+---------------------------------------------------------+-------------------+--------------------------------+----------------+
+
 
 * \(1) The output is an array of indices into the input, that define a
   stable sort of the input.
@@ -1581,11 +1718,13 @@ in the respective option classes.
   :func:`std::nth_element`).  *N* is given in
   :member:`PartitionNthOptions::pivot`.
 
-* \(4) The input can be an array, chunked array, record batch or
+* \(4) The output is a one-based numerical array of ranks
+
+* \(5) The input can be an array, chunked array, record batch or
   table. If the input is a record batch or table, one or more sort
   keys must be specified.
 
-* \(5) The output is an array of indices into the input, that define a
+* \(6) The output is an array of indices into the input, that define a
   non-stable sort of the input.
 
 .. _cpp-compute-vector-structural-transforms:
@@ -1600,9 +1739,13 @@ Structural transforms
 +---------------------+------------+-------------------------------------+------------------+------------------------------+--------+
 | list_flatten        | Unary      | List-like                           | List value type  |                              | \(2)   |
 +---------------------+------------+-------------------------------------+------------------+------------------------------+--------+
-| list_parent_indices | Unary      | List-like                           | Int32 or Int64   |                              | \(3)   |
+| list_parent_indices | Unary      | List-like                           | Int64            |                              | \(3)   |
 +---------------------+------------+-------------------------------------+------------------+------------------------------+--------+
-| struct_field        | Unary      | Struct or Union                     | Computed         | :struct:`StructFieldOptions` | \(4)   |
+| list_slice          | Unary      | List-like                           | List-like        | :struct:`ListSliceOptions`   | \(4)   |
++---------------------+------------+-------------------------------------+------------------+------------------------------+--------+
+| map_lookup          | Unary      | Map                                 | Computed         | :struct:`MapLookupOptions`   | \(5)   |
++---------------------+------------+-------------------------------------+------------------+------------------------------+--------+
+| struct_field        | Unary      | Struct or Union                     | Computed         | :struct:`StructFieldOptions` | \(6)   |
 +---------------------+------------+-------------------------------------+------------------+------------------------------+--------+
 
 * \(1) Output is an array of the same length as the input list array. The
@@ -1614,10 +1757,18 @@ Structural transforms
 
 * \(3) For each value in the list child array, the index at which it is found
   in the list array is appended to the output.  Nulls in the parent list array
-  are discarded.  Output type is Int32 for List and FixedSizeList, Int64 for
-  LargeList.
+  are discarded.
 
-* \(4) Extract a child value based on a sequence of indices passed in
+* \(4) For each list element, compute the slice of that list element, then
+  return another list-like array of those slices. Can return either a
+  fixed or variable size list-like array, as determined by options provided.
+
+* \(5) Extract either the ``FIRST``, ``LAST`` or ``ALL`` items from a
+  map whose key match the given query key passed via options.
+  The output type is an Array of items for the ``FIRST``/``LAST`` options
+  and an Array of List of items for the ``ALL`` option.
+
+* \(6) Extract a child value based on a sequence of indices passed in
   the options. The validity bitmap of the result will be the
   intersection of all intermediate validity bitmaps. For example, for
   an array with type ``struct<a: int32, b: struct<c: int64, d:
@@ -1646,10 +1797,15 @@ replaced, based on the remaining inputs.
 +--------------------------+------------+-----------------------+--------------+--------------+--------------+-------+
 | Function name            | Arity      | Input type 1          | Input type 2 | Input type 3 | Output type  | Notes |
 +==========================+============+=======================+==============+==============+==============+=======+
-| replace_with_mask        | Ternary    | Fixed-width or binary | Boolean      | Input type 1 | Input type 1 | \(1)  |
+| fill_null_backward       | Unary      | Fixed-width or binary | N/A          | N/A          | N/A          | \(1)  |
++--------------------------+------------+-----------------------+--------------+--------------+--------------+-------+
+| fill_null_forward        | Unary      | Fixed-width or binary | N/A          | N/A          | N/A          | \(1)  |
++--------------------------+------------+-----------------------+--------------+--------------+--------------+-------+
+| replace_with_mask        | Ternary    | Fixed-width or binary | Boolean      | Input type 1 | Input type 1 | \(2)  |
 +--------------------------+------------+-----------------------+--------------+--------------+--------------+-------+
 
-* \(1) Each element in input 1 for which the corresponding Boolean in input 2
+* \(1) Valid values are carried forward/backward to fill null values.
+* \(2) Each element in input 1 for which the corresponding Boolean in input 2
   is true is replaced with the next value from input 3. A null in input 2
   results in a corresponding null in the output.
 

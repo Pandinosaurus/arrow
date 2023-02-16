@@ -26,9 +26,7 @@
 #' If `auto_disconnect = TRUE`, the DuckDB table that is created will be configured
 #' to be unregistered when the `tbl` object is garbage collected. This is helpful
 #' if you don't want to have extra table objects in DuckDB after you've finished
-#' using them. Currently, this cleanup can, however, sometimes lead to hangs if
-#' tables are created and deleted in quick succession, hence the default value
-#' of `FALSE`
+#' using them.
 #'
 #' @param .data the Arrow object (e.g. Dataset, Table) to use for the DuckDB table
 #' @param con a DuckDB connection to use (default will create one and store it
@@ -36,7 +34,7 @@
 #' @param table_name a name to use in DuckDB for this object. The default is a
 #' unique string `"arrow_"` followed by numbers.
 #' @param auto_disconnect should the table be automatically cleaned up when the
-#' resulting object is removed (and garbage collected)? Default: `FALSE`
+#' resulting object is removed (and garbage collected)? Default: `TRUE`
 #'
 #' @return A `tbl` of the new table in DuckDB
 #'
@@ -49,17 +47,21 @@
 #'
 #' ds %>%
 #'   filter(mpg < 30) %>%
-#'   to_duckdb() %>%
 #'   group_by(cyl) %>%
-#'   summarize(mean_mpg = mean(mpg, na.rm = TRUE))
+#'   to_duckdb() %>%
+#'   slice_min(disp)
 to_duckdb <- function(.data,
                       con = arrow_duck_connection(),
                       table_name = unique_arrow_tablename(),
                       auto_disconnect = TRUE) {
   .data <- as_adq(.data)
+  if (!requireNamespace("duckdb", quietly = TRUE)) {
+    abort("Please install the `duckdb` package to pass data with `to_duckdb()`.")
+  }
+
   duckdb::duckdb_register_arrow(con, table_name, .data)
 
-  tbl <- tbl(con, table_name)
+  tbl <- dplyr::tbl(con, table_name)
   groups <- dplyr::groups(.data)
   if (length(groups)) {
     tbl <- dplyr::group_by(tbl, groups)
@@ -104,12 +106,11 @@ unique_arrow_tablename <- function() {
 
 # Creates an environment that disconnects the database when it's GC'd
 duckdb_disconnector <- function(con, tbl_name) {
+  force(tbl_name)
   reg.finalizer(environment(), function(...) {
     # remote the table we ephemerally created (though only if the connection is
     # still valid)
-    if (DBI::dbIsValid(con)) {
-      duckdb::duckdb_unregister_arrow(con, tbl_name)
-    }
+    duckdb::duckdb_unregister_arrow(con, tbl_name)
   })
   environment()
 }
@@ -120,8 +121,7 @@ duckdb_disconnector <- function(con, tbl_name) {
 #' other processes (like DuckDB).
 #'
 #' @param .data the object to be converted
-#'
-#' @return an `arrow_dplyr_query` object, to be used in dplyr pipelines.
+#' @return A `RecordBatchReader`.
 #' @export
 #'
 #' @examplesIf getFromNamespace("run_duckdb_examples", "arrow")()
@@ -155,6 +155,5 @@ to_arrow <- function(.data) {
   # Run the query
   res <- DBI::dbSendQuery(dbplyr::remote_con(.data), dbplyr::remote_query(.data), arrow = TRUE)
 
-  # TODO: we shouldn't need $read_table(), but we get segfaults when we do.
-  arrow_dplyr_query(duckdb::duckdb_fetch_record_batch(res)$read_table())
+  duckdb::duckdb_fetch_record_batch(res)
 }

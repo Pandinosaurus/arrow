@@ -21,11 +21,11 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/arrow/go/v7/arrow"
-	"github.com/apache/arrow/go/v7/arrow/array"
-	"github.com/apache/arrow/go/v7/arrow/float16"
-	"github.com/apache/arrow/go/v7/arrow/internal/arrdata"
-	"github.com/apache/arrow/go/v7/arrow/memory"
+	"github.com/apache/arrow/go/v12/arrow"
+	"github.com/apache/arrow/go/v12/arrow/array"
+	"github.com/apache/arrow/go/v12/arrow/float16"
+	"github.com/apache/arrow/go/v12/arrow/internal/arrdata"
+	"github.com/apache/arrow/go/v12/arrow/memory"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -63,7 +63,7 @@ func TestArraySliceEqual(t *testing.T) {
 			for i, col := range rec.Columns() {
 				t.Run(schema.Field(i).Name, func(t *testing.T) {
 					arr := col
-					if !array.ArraySliceEqual(
+					if !array.SliceEqual(
 						arr, 0, int64(arr.Len()),
 						arr, 0, int64(arr.Len()),
 					) {
@@ -75,7 +75,7 @@ func TestArraySliceEqual(t *testing.T) {
 					sub2 := array.NewSlice(arr, 0, int64(arr.Len()-1))
 					defer sub2.Release()
 
-					if array.ArraySliceEqual(sub1, 0, int64(sub1.Len()), sub2, 0, int64(sub2.Len())) && name != "nulls" {
+					if array.SliceEqual(sub1, 0, int64(sub1.Len()), sub2, 0, int64(sub2.Len())) && name != "nulls" {
 						t.Fatalf("non-identical slices should not compare equal:\nsub1=%v\nsub2=%v\narrf=%v\n", sub1, sub2, arr)
 					}
 				})
@@ -92,7 +92,7 @@ func TestArrayApproxEqual(t *testing.T) {
 			for i, col := range rec.Columns() {
 				t.Run(schema.Field(i).Name, func(t *testing.T) {
 					arr := col
-					if !array.ArrayApproxEqual(arr, arr) {
+					if !array.ApproxEqual(arr, arr) {
 						t.Fatalf("identical arrays should compare equal:\narray=%v", arr)
 					}
 					sub1 := array.NewSlice(arr, 1, int64(arr.Len()))
@@ -101,7 +101,7 @@ func TestArrayApproxEqual(t *testing.T) {
 					sub2 := array.NewSlice(arr, 0, int64(arr.Len()-1))
 					defer sub2.Release()
 
-					if array.ArrayApproxEqual(sub1, sub2) && name != "nulls" {
+					if array.ApproxEqual(sub1, sub2) && name != "nulls" {
 						t.Fatalf("non-identical arrays should not compare equal:\nsub1=%v\nsub2=%v\narrf=%v\n", sub1, sub2, arr)
 					}
 				})
@@ -295,14 +295,14 @@ func TestArrayApproxEqualFloats(t *testing.T) {
 			a2 := arrayOf(mem, tc.a2, nil)
 			defer a2.Release()
 
-			if got, want := array.ArrayApproxEqual(a1, a2, tc.opts...), tc.want; got != want {
+			if got, want := array.ApproxEqual(a1, a2, tc.opts...), tc.want; got != want {
 				t.Fatalf("invalid comparison: got=%v, want=%v\na1: %v\na2: %v\n", got, want, a1, a2)
 			}
 		})
 	}
 }
 
-func arrayOf(mem memory.Allocator, a interface{}, valids []bool) array.Interface {
+func arrayOf(mem memory.Allocator, a interface{}, valids []bool) arrow.Array {
 	if mem == nil {
 		mem = memory.NewGoAllocator()
 	}
@@ -563,9 +563,9 @@ func TestChunkedApproxEqual(t *testing.T) {
 	f3 := fb.NewFloat64Array()
 	defer f3.Release()
 
-	c1 := array.NewChunked(
+	c1 := arrow.NewChunked(
 		arrow.PrimitiveTypes.Float64,
-		[]array.Interface{f1, f2, f3},
+		[]arrow.Array{f1, f2, f3},
 	)
 	defer c1.Release()
 
@@ -585,9 +585,9 @@ func TestChunkedApproxEqual(t *testing.T) {
 	f7 := fb.NewFloat64Array()
 	defer f7.Release()
 
-	c2 := array.NewChunked(
+	c2 := arrow.NewChunked(
 		arrow.PrimitiveTypes.Float64,
-		[]array.Interface{f4, f5, f6, f7},
+		[]arrow.Array{f4, f5, f6, f7},
 	)
 	defer c2.Release()
 

@@ -20,10 +20,10 @@ import (
 	"io"
 	"sync"
 
-	"github.com/apache/arrow/go/v7/arrow/bitutil"
-	"github.com/apache/arrow/go/v7/arrow/memory"
-	"github.com/apache/arrow/go/v7/parquet"
-	"github.com/apache/arrow/go/v7/parquet/internal/utils"
+	"github.com/apache/arrow/go/v12/arrow/bitutil"
+	"github.com/apache/arrow/go/v12/arrow/memory"
+	"github.com/apache/arrow/go/v12/internal/utils"
+	"github.com/apache/arrow/go/v12/parquet"
 	"golang.org/x/xerrors"
 )
 
@@ -71,6 +71,7 @@ type TypedEncoder interface {
 	Allocator() memory.Allocator
 	// Type returns the underlying physical type this encodes.
 	Type() parquet.Type
+	Release()
 }
 
 // DictEncoder is a special kind of TypedEncoder which implements Dictionary

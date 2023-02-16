@@ -21,7 +21,7 @@ open.}
 
 \item{col_select}{A character vector of column names to keep, as in the
 "select" argument to \code{data.table::fread()}, or a
-\link[tidyselect:vars_select]{tidy selection specification}
+\link[tidyselect:eval_select]{tidy selection specification}
 of columns, as used in \code{dplyr::select()}.}
 
 \item{as_data_frame}{Should the function return a \code{data.frame} (default) or
@@ -40,7 +40,7 @@ A \link[=Table]{arrow::Table}, or a \code{data.frame} if \code{as_data_frame} is
 This function enables you to read Parquet files into R.
 }
 \examples{
-\dontshow{if (arrow_with_parquet()) (if (getRversion() >= "3.4") withAutoprint else force)(\{ # examplesIf}
+\dontshow{if (arrow_with_parquet() && !getFromNamespace("on_linux_dev", "arrow")()) (if (getRversion() >= "3.4") withAutoprint else force)(\{ # examplesIf}
 tf <- tempfile()
 on.exit(unlink(tf))
 write_parquet(mtcars, tf)

@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 #include "arrow/buffer.h"
@@ -66,6 +67,8 @@ std::string FlightStatusDetail::CodeAsString() const {
       return "Unauthorized";
     case FlightStatusCode::Unavailable:
       return "Unavailable";
+    case FlightStatusCode::Failed:
+      return "Failed";
     default:
       return "Unknown";
   }
@@ -141,49 +144,121 @@ Status FlightPayload::Validate() const {
   return Status::OK();
 }
 
-Status SchemaResult::GetSchema(ipc::DictionaryMemo* dictionary_memo,
-                               std::shared_ptr<Schema>* out) const {
+arrow::Result<std::shared_ptr<Schema>> SchemaResult::GetSchema(
+    ipc::DictionaryMemo* dictionary_memo) const {
   io::BufferReader schema_reader(raw_schema_);
-  return ipc::ReadSchema(&schema_reader, dictionary_memo).Value(out);
+  return ipc::ReadSchema(&schema_reader, dictionary_memo);
 }
 
-Status FlightDescriptor::SerializeToString(std::string* out) const {
+arrow::Result<std::unique_ptr<SchemaResult>> SchemaResult::Make(const Schema& schema) {
+  std::string schema_in;
+  RETURN_NOT_OK(internal::SchemaToString(schema, &schema_in));
+  return std::make_unique<SchemaResult>(std::move(schema_in));
+}
+
+Status SchemaResult::GetSchema(ipc::DictionaryMemo* dictionary_memo,
+                               std::shared_ptr<Schema>* out) const {
+  return GetSchema(dictionary_memo).Value(out);
+}
+
+bool SchemaResult::Equals(const SchemaResult& other) const {
+  return raw_schema_ == other.raw_schema_;
+}
+
+arrow::Result<std::string> SchemaResult::SerializeToString() const {
+  pb::SchemaResult pb_schema_result;
+  RETURN_NOT_OK(internal::ToProto(*this, &pb_schema_result));
+
+  std::string out;
+  if (!pb_schema_result.SerializeToString(&out)) {
+    return Status::IOError("Serialized SchemaResult exceeded 2 GiB limit");
+  }
+  return out;
+}
+
+arrow::Result<SchemaResult> SchemaResult::Deserialize(std::string_view serialized) {
+  pb::SchemaResult pb_schema_result;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized SchemaResult size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_schema_result.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid SchemaResult");
+  }
+  return SchemaResult{pb_schema_result.schema()};
+}
+
+arrow::Result<std::string> FlightDescriptor::SerializeToString() const {
   pb::FlightDescriptor pb_descriptor;
   RETURN_NOT_OK(internal::ToProto(*this, &pb_descriptor));
 
-  if (!pb_descriptor.SerializeToString(out)) {
-    return Status::IOError("Serialized descriptor exceeded 2 GiB limit");
+  std::string out;
+  if (!pb_descriptor.SerializeToString(&out)) {
+    return Status::IOError("Serialized FlightDescriptor exceeded 2 GiB limit");
   }
-  return Status::OK();
+  return out;
+}
+
+Status FlightDescriptor::SerializeToString(std::string* out) const {
+  return SerializeToString().Value(out);
+}
+
+arrow::Result<FlightDescriptor> FlightDescriptor::Deserialize(
+    std::string_view serialized) {
+  pb::FlightDescriptor pb_descriptor;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized FlightDescriptor size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_descriptor.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid FlightDescriptor");
+  }
+  FlightDescriptor out;
+  RETURN_NOT_OK(internal::FromProto(pb_descriptor, &out));
+  return out;
 }
 
 Status FlightDescriptor::Deserialize(const std::string& serialized,
                                      FlightDescriptor* out) {
-  pb::FlightDescriptor pb_descriptor;
-  if (!pb_descriptor.ParseFromString(serialized)) {
-    return Status::Invalid("Not a valid descriptor");
-  }
-  return internal::FromProto(pb_descriptor, out);
+  return Deserialize(serialized).Value(out);
 }
 
 bool Ticket::Equals(const Ticket& other) const { return ticket == other.ticket; }
 
-Status Ticket::SerializeToString(std::string* out) const {
+arrow::Result<std::string> Ticket::SerializeToString() const {
   pb::Ticket pb_ticket;
-  internal::ToProto(*this, &pb_ticket);
+  RETURN_NOT_OK(internal::ToProto(*this, &pb_ticket));
 
-  if (!pb_ticket.SerializeToString(out)) {
-    return Status::IOError("Serialized ticket exceeded 2 GiB limit");
+  std::string out;
+  if (!pb_ticket.SerializeToString(&out)) {
+    return Status::IOError("Serialized Ticket exceeded 2 GiB limit");
   }
-  return Status::OK();
+  return out;
+}
+
+Status Ticket::SerializeToString(std::string* out) const {
+  return SerializeToString().Value(out);
+}
+
+arrow::Result<Ticket> Ticket::Deserialize(std::string_view serialized) {
+  pb::Ticket pb_ticket;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized Ticket size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_ticket.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid Ticket");
+  }
+  Ticket out;
+  RETURN_NOT_OK(internal::FromProto(pb_ticket, &out));
+  return out;
 }
 
 Status Ticket::Deserialize(const std::string& serialized, Ticket* out) {
-  pb::Ticket pb_ticket;
-  if (!pb_ticket.ParseFromString(serialized)) {
-    return Status::Invalid("Not a valid ticket");
-  }
-  return internal::FromProto(pb_ticket, out);
+  return Deserialize(serialized).Value(out);
 }
 
 arrow::Result<FlightInfo> FlightInfo::Make(const Schema& schema,
@@ -199,63 +274,109 @@ arrow::Result<FlightInfo> FlightInfo::Make(const Schema& schema,
   return FlightInfo(data);
 }
 
-Status FlightInfo::GetSchema(ipc::DictionaryMemo* dictionary_memo,
-                             std::shared_ptr<Schema>* out) const {
+arrow::Result<std::shared_ptr<Schema>> FlightInfo::GetSchema(
+    ipc::DictionaryMemo* dictionary_memo) const {
   if (reconstructed_schema_) {
-    *out = schema_;
-    return Status::OK();
+    return schema_;
   }
   io::BufferReader schema_reader(data_.schema);
   RETURN_NOT_OK(ipc::ReadSchema(&schema_reader, dictionary_memo).Value(&schema_));
   reconstructed_schema_ = true;
-  *out = schema_;
-  return Status::OK();
+  return schema_;
 }
 
-Status FlightInfo::SerializeToString(std::string* out) const {
+Status FlightInfo::GetSchema(ipc::DictionaryMemo* dictionary_memo,
+                             std::shared_ptr<Schema>* out) const {
+  return GetSchema(dictionary_memo).Value(out);
+}
+
+arrow::Result<std::string> FlightInfo::SerializeToString() const {
   pb::FlightInfo pb_info;
   RETURN_NOT_OK(internal::ToProto(*this, &pb_info));
 
-  if (!pb_info.SerializeToString(out)) {
+  std::string out;
+  if (!pb_info.SerializeToString(&out)) {
     return Status::IOError("Serialized FlightInfo exceeded 2 GiB limit");
   }
-  return Status::OK();
+  return out;
 }
 
-Status FlightInfo::Deserialize(const std::string& serialized,
-                               std::unique_ptr<FlightInfo>* out) {
+Status FlightInfo::SerializeToString(std::string* out) const {
+  return SerializeToString().Value(out);
+}
+
+arrow::Result<std::unique_ptr<FlightInfo>> FlightInfo::Deserialize(
+    std::string_view serialized) {
   pb::FlightInfo pb_info;
-  if (!pb_info.ParseFromString(serialized)) {
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized FlightInfo size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_info.ParseFromZeroCopyStream(&input)) {
     return Status::Invalid("Not a valid FlightInfo");
   }
   FlightInfo::Data data;
   RETURN_NOT_OK(internal::FromProto(pb_info, &data));
-  out->reset(new FlightInfo(data));
-  return Status::OK();
+  return std::make_unique<FlightInfo>(std::move(data));
+}
+
+Status FlightInfo::Deserialize(const std::string& serialized,
+                               std::unique_ptr<FlightInfo>* out) {
+  return Deserialize(serialized).Value(out);
 }
 
 Location::Location() { uri_ = std::make_shared<arrow::internal::Uri>(); }
 
+Status FlightListing::Next(std::unique_ptr<FlightInfo>* info) {
+  return Next().Value(info);
+}
+
+arrow::Result<Location> Location::Parse(const std::string& uri_string) {
+  Location location;
+  RETURN_NOT_OK(location.uri_->Parse(uri_string));
+  return location;
+}
+
 Status Location::Parse(const std::string& uri_string, Location* location) {
-  return location->uri_->Parse(uri_string);
+  return Parse(uri_string).Value(location);
+}
+
+arrow::Result<Location> Location::ForGrpcTcp(const std::string& host, const int port) {
+  std::stringstream uri_string;
+  uri_string << "grpc+tcp://" << host << ':' << port;
+  return Location::Parse(uri_string.str());
 }
 
 Status Location::ForGrpcTcp(const std::string& host, const int port, Location* location) {
+  return ForGrpcTcp(host, port).Value(location);
+}
+
+arrow::Result<Location> Location::ForGrpcTls(const std::string& host, const int port) {
   std::stringstream uri_string;
-  uri_string << "grpc+tcp://" << host << ':' << port;
-  return Location::Parse(uri_string.str(), location);
+  uri_string << "grpc+tls://" << host << ':' << port;
+  return Location::Parse(uri_string.str());
 }
 
 Status Location::ForGrpcTls(const std::string& host, const int port, Location* location) {
+  return ForGrpcTls(host, port).Value(location);
+}
+
+arrow::Result<Location> Location::ForGrpcUnix(const std::string& path) {
   std::stringstream uri_string;
-  uri_string << "grpc+tls://" << host << ':' << port;
-  return Location::Parse(uri_string.str(), location);
+  uri_string << "grpc+unix://" << path;
+  return Location::Parse(uri_string.str());
 }
 
 Status Location::ForGrpcUnix(const std::string& path, Location* location) {
+  return ForGrpcUnix(path).Value(location);
+}
+
+arrow::Result<Location> Location::ForScheme(const std::string& scheme,
+                                            const std::string& host, const int port) {
   std::stringstream uri_string;
-  uri_string << "grpc+unix://" << path;
-  return Location::Parse(uri_string.str(), location);
+  uri_string << scheme << "://" << host << ':' << port;
+  return Location::Parse(uri_string.str());
 }
 
 std::string Location::ToString() const { return uri_->ToString(); }
@@ -276,23 +397,183 @@ bool FlightEndpoint::Equals(const FlightEndpoint& other) const {
   return ticket == other.ticket && locations == other.locations;
 }
 
+arrow::Result<std::string> FlightEndpoint::SerializeToString() const {
+  pb::FlightEndpoint pb_flight_endpoint;
+  RETURN_NOT_OK(internal::ToProto(*this, &pb_flight_endpoint));
+
+  std::string out;
+  if (!pb_flight_endpoint.SerializeToString(&out)) {
+    return Status::IOError("Serialized FlightEndpoint exceeded 2 GiB limit");
+  }
+  return out;
+}
+
+arrow::Result<FlightEndpoint> FlightEndpoint::Deserialize(std::string_view serialized) {
+  pb::FlightEndpoint pb_flight_endpoint;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized FlightEndpoint size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_flight_endpoint.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid FlightEndpoint");
+  }
+  FlightEndpoint out;
+  RETURN_NOT_OK(internal::FromProto(pb_flight_endpoint, &out));
+  return out;
+}
+
+bool ActionType::Equals(const ActionType& other) const {
+  return type == other.type && description == other.description;
+}
+
+arrow::Result<std::string> ActionType::SerializeToString() const {
+  pb::ActionType pb_action_type;
+  RETURN_NOT_OK(internal::ToProto(*this, &pb_action_type));
+
+  std::string out;
+  if (!pb_action_type.SerializeToString(&out)) {
+    return Status::IOError("Serialized ActionType exceeded 2 GiB limit");
+  }
+  return out;
+}
+
+arrow::Result<ActionType> ActionType::Deserialize(std::string_view serialized) {
+  pb::ActionType pb_action_type;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized ActionType size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_action_type.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid ActionType");
+  }
+  ActionType out;
+  RETURN_NOT_OK(internal::FromProto(pb_action_type, &out));
+  return out;
+}
+
+bool Criteria::Equals(const Criteria& other) const {
+  return expression == other.expression;
+}
+
+arrow::Result<std::string> Criteria::SerializeToString() const {
+  pb::Criteria pb_criteria;
+  RETURN_NOT_OK(internal::ToProto(*this, &pb_criteria));
+
+  std::string out;
+  if (!pb_criteria.SerializeToString(&out)) {
+    return Status::IOError("Serialized Criteria exceeded 2 GiB limit");
+  }
+  return out;
+}
+
+arrow::Result<Criteria> Criteria::Deserialize(std::string_view serialized) {
+  pb::Criteria pb_criteria;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized Criteria size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_criteria.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid Criteria");
+  }
+  Criteria out;
+  RETURN_NOT_OK(internal::FromProto(pb_criteria, &out));
+  return out;
+}
+
+bool Action::Equals(const Action& other) const {
+  return (type == other.type) &&
+         ((body == other.body) || (body && other.body && body->Equals(*other.body)));
+}
+
+arrow::Result<std::string> Action::SerializeToString() const {
+  pb::Action pb_action;
+  RETURN_NOT_OK(internal::ToProto(*this, &pb_action));
+
+  std::string out;
+  if (!pb_action.SerializeToString(&out)) {
+    return Status::IOError("Serialized Action exceeded 2 GiB limit");
+  }
+  return out;
+}
+
+arrow::Result<Action> Action::Deserialize(std::string_view serialized) {
+  pb::Action pb_action;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized Action size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_action.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid Action");
+  }
+  Action out;
+  RETURN_NOT_OK(internal::FromProto(pb_action, &out));
+  return out;
+}
+
+bool Result::Equals(const Result& other) const {
+  return (body == other.body) || (body && other.body && body->Equals(*other.body));
+}
+
+arrow::Result<std::string> Result::SerializeToString() const {
+  pb::Result pb_result;
+  RETURN_NOT_OK(internal::ToProto(*this, &pb_result));
+
+  std::string out;
+  if (!pb_result.SerializeToString(&out)) {
+    return Status::IOError("Serialized Result exceeded 2 GiB limit");
+  }
+  return out;
+}
+
+arrow::Result<Result> Result::Deserialize(std::string_view serialized) {
+  pb::Result pb_result;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized Result size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_result.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid Result");
+  }
+  Result out;
+  RETURN_NOT_OK(internal::FromProto(pb_result, &out));
+  return out;
+}
+
+Status ResultStream::Next(std::unique_ptr<Result>* info) { return Next().Value(info); }
+
+Status MetadataRecordBatchReader::Next(FlightStreamChunk* next) {
+  return Next().Value(next);
+}
+
+arrow::Result<std::vector<std::shared_ptr<RecordBatch>>>
+MetadataRecordBatchReader::ToRecordBatches() {
+  std::vector<std::shared_ptr<RecordBatch>> batches;
+  while (true) {
+    ARROW_ASSIGN_OR_RAISE(FlightStreamChunk chunk, Next());
+    if (!chunk.data) break;
+    batches.emplace_back(std::move(chunk.data));
+  }
+  return batches;
+}
+
 Status MetadataRecordBatchReader::ReadAll(
     std::vector<std::shared_ptr<RecordBatch>>* batches) {
-  FlightStreamChunk chunk;
+  return ToRecordBatches().Value(batches);
+}
 
-  while (true) {
-    RETURN_NOT_OK(Next(&chunk));
-    if (!chunk.data) break;
-    batches->emplace_back(std::move(chunk.data));
-  }
-  return Status::OK();
+arrow::Result<std::shared_ptr<Table>> MetadataRecordBatchReader::ToTable() {
+  ARROW_ASSIGN_OR_RAISE(auto batches, ToRecordBatches());
+  ARROW_ASSIGN_OR_RAISE(auto schema, GetSchema());
+  return Table::FromRecordBatches(schema, std::move(batches));
 }
 
 Status MetadataRecordBatchReader::ReadAll(std::shared_ptr<Table>* table) {
-  std::vector<std::shared_ptr<RecordBatch>> batches;
-  RETURN_NOT_OK(ReadAll(&batches));
-  ARROW_ASSIGN_OR_RAISE(auto schema, GetSchema());
-  return Table::FromRecordBatches(schema, std::move(batches)).Value(table);
+  return ToTable().Value(table);
 }
 
 Status MetadataRecordBatchWriter::Begin(const std::shared_ptr<Schema>& schema) {
@@ -307,9 +588,8 @@ class MetadataRecordBatchReaderAdapter : public RecordBatchReader {
       : schema_(std::move(schema)), delegate_(std::move(delegate)) {}
   std::shared_ptr<Schema> schema() const override { return schema_; }
   Status ReadNext(std::shared_ptr<RecordBatch>* batch) override {
-    FlightStreamChunk next;
     while (true) {
-      RETURN_NOT_OK(delegate_->Next(&next));
+      ARROW_ASSIGN_OR_RAISE(FlightStreamChunk next, delegate_->Next());
       if (!next.data && !next.app_metadata) {
         // EOS
         *batch = nullptr;
@@ -341,38 +621,58 @@ SimpleFlightListing::SimpleFlightListing(const std::vector<FlightInfo>& flights)
 SimpleFlightListing::SimpleFlightListing(std::vector<FlightInfo>&& flights)
     : position_(0), flights_(std::move(flights)) {}
 
-Status SimpleFlightListing::Next(std::unique_ptr<FlightInfo>* info) {
+arrow::Result<std::unique_ptr<FlightInfo>> SimpleFlightListing::Next() {
   if (position_ >= static_cast<int>(flights_.size())) {
-    *info = nullptr;
-    return Status::OK();
+    return nullptr;
   }
-  *info = std::unique_ptr<FlightInfo>(new FlightInfo(std::move(flights_[position_++])));
-  return Status::OK();
+  return std::make_unique<FlightInfo>(std::move(flights_[position_++]));
 }
 
 SimpleResultStream::SimpleResultStream(std::vector<Result>&& results)
     : results_(std::move(results)), position_(0) {}
 
-Status SimpleResultStream::Next(std::unique_ptr<Result>* result) {
+arrow::Result<std::unique_ptr<Result>> SimpleResultStream::Next() {
   if (position_ >= results_.size()) {
-    *result = nullptr;
-    return Status::OK();
+    return nullptr;
   }
-  *result = std::unique_ptr<Result>(new Result(std::move(results_[position_++])));
-  return Status::OK();
+  return std::make_unique<Result>(std::move(results_[position_++]));
+}
+
+bool BasicAuth::Equals(const BasicAuth& other) const {
+  return (username == other.username) && (password == other.password);
+}
+
+arrow::Result<BasicAuth> BasicAuth::Deserialize(std::string_view serialized) {
+  pb::BasicAuth pb_result;
+  if (serialized.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    return Status::Invalid("Serialized BasicAuth size should not exceed 2 GiB");
+  }
+  google::protobuf::io::ArrayInputStream input(serialized.data(),
+                                               static_cast<int>(serialized.size()));
+  if (!pb_result.ParseFromZeroCopyStream(&input)) {
+    return Status::Invalid("Not a valid BasicAuth");
+  }
+  BasicAuth out;
+  RETURN_NOT_OK(internal::FromProto(pb_result, &out));
+  return out;
 }
 
 Status BasicAuth::Deserialize(const std::string& serialized, BasicAuth* out) {
+  return Deserialize(serialized).Value(out);
+}
+
+arrow::Result<std::string> BasicAuth::SerializeToString() const {
   pb::BasicAuth pb_result;
-  pb_result.ParseFromString(serialized);
-  return internal::FromProto(pb_result, out);
+  RETURN_NOT_OK(internal::ToProto(*this, &pb_result));
+  std::string out;
+  if (!pb_result.SerializeToString(&out)) {
+    return Status::IOError("Serialized BasicAuth exceeded 2 GiB limit");
+  }
+  return out;
 }
 
 Status BasicAuth::Serialize(const BasicAuth& basic_auth, std::string* out) {
-  pb::BasicAuth pb_result;
-  RETURN_NOT_OK(internal::ToProto(basic_auth, &pb_result));
-  *out = pb_result.SerializeAsString();
-  return Status::OK();
+  return basic_auth.SerializeToString().Value(out);
 }
 }  // namespace flight
 }  // namespace arrow

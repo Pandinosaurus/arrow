@@ -38,8 +38,9 @@
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/key_value_metadata.h"
 #include "arrow/util/logging.h"
+#include "arrow/util/string.h"
 #include "arrow/util/ubsan.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_type_inline.h"
 
 #include "generated/File_generated.h"
 #include "generated/Message_generated.h"
@@ -51,7 +52,7 @@ namespace arrow {
 
 namespace flatbuf = org::apache::arrow::flatbuf;
 using internal::checked_cast;
-using internal::GetByteWidth;
+using internal::ToChars;
 
 namespace ipc {
 namespace internal {
@@ -386,8 +387,7 @@ Status ConcreteTypeFromFlatbuffer(flatbuf::Type type, const void* type_data,
       return UnionFromFlatbuffer(static_cast<const flatbuf::Union*>(type_data), children,
                                  out);
     default:
-      return Status::Invalid("Unrecognized type:" +
-                             std::to_string(static_cast<int>(type)));
+      return Status::Invalid("Unrecognized type:" + ToChars(static_cast<int>(type)));
   }
 }
 
@@ -1055,8 +1055,8 @@ Status MakeSparseTensorIndexCSF(FBB& fbb, const SparseCSFIndex& sparse_index,
   auto indices_type_offset = flatbuf::CreateInt(fbb, indices_value_type.bit_width(),
                                                 indices_value_type.is_signed());
 
-  const int64_t indptr_elem_size = GetByteWidth(indptr_value_type);
-  const int64_t indices_elem_size = GetByteWidth(indices_value_type);
+  const int64_t indptr_elem_size = indptr_value_type.byte_width();
+  const int64_t indices_elem_size = indices_value_type.byte_width();
 
   int64_t offset = 0;
   std::vector<flatbuf::Buffer> indptr, indices;
@@ -1224,7 +1224,7 @@ Result<std::shared_ptr<Buffer>> WriteTensorMessage(const Tensor& tensor,
   using TensorOffset = flatbuffers::Offset<flatbuf::Tensor>;
 
   FBB fbb;
-  const int elem_size = GetByteWidth(*tensor.type());
+  const int elem_size = tensor.type()->byte_width();
 
   flatbuf::Type fb_type_type;
   Offset fb_type;
@@ -1303,15 +1303,15 @@ Status WriteFileFooter(const Schema& schema, const std::vector<FileBlock>& dicti
 
 #ifndef NDEBUG
   for (size_t i = 0; i < dictionaries.size(); ++i) {
-    DCHECK(BitUtil::IsMultipleOf8(dictionaries[i].offset)) << i;
-    DCHECK(BitUtil::IsMultipleOf8(dictionaries[i].metadata_length)) << i;
-    DCHECK(BitUtil::IsMultipleOf8(dictionaries[i].body_length)) << i;
+    DCHECK(bit_util::IsMultipleOf8(dictionaries[i].offset)) << i;
+    DCHECK(bit_util::IsMultipleOf8(dictionaries[i].metadata_length)) << i;
+    DCHECK(bit_util::IsMultipleOf8(dictionaries[i].body_length)) << i;
   }
 
   for (size_t i = 0; i < record_batches.size(); ++i) {
-    DCHECK(BitUtil::IsMultipleOf8(record_batches[i].offset)) << i;
-    DCHECK(BitUtil::IsMultipleOf8(record_batches[i].metadata_length)) << i;
-    DCHECK(BitUtil::IsMultipleOf8(record_batches[i].body_length)) << i;
+    DCHECK(bit_util::IsMultipleOf8(record_batches[i].offset)) << i;
+    DCHECK(bit_util::IsMultipleOf8(record_batches[i].metadata_length)) << i;
+    DCHECK(bit_util::IsMultipleOf8(record_batches[i].body_length)) << i;
   }
 #endif
 

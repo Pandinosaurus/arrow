@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import warnings
 
 from pyarrow._plasma import (ObjectID, ObjectNotAvailable,  # noqa
                              PlasmaBuffer, PlasmaClient, connect,
@@ -64,7 +65,7 @@ def build_plasma_tensorflow_op():
         tf_cflags = tf.sysconfig.get_compile_flags()
         if sys.platform == 'darwin':
             tf_cflags = ["-undefined", "dynamic_lookup"] + tf_cflags
-        cmd = ["g++", "-std=c++11", "-g", "-shared", cc_path,
+        cmd = ["g++", "-std=c++17", "-g", "-shared", cc_path,
                "-o", so_path, "-DNDEBUG", "-I" + pa.get_include()]
         cmd += ["-L" + dir for dir in pa.get_library_dirs()]
         cmd += ["-lplasma", "-larrow_python", "-larrow", "-fPIC"]
@@ -83,21 +84,42 @@ def start_plasma_store(plasma_store_memory,
                        use_valgrind=False, use_profiler=False,
                        plasma_directory=None, use_hugepages=False,
                        external_store=None):
-    """Start a plasma store process.
-    Args:
-        plasma_store_memory (int): Capacity of the plasma store in bytes.
-        use_valgrind (bool): True if the plasma store should be started inside
-            of valgrind. If this is True, use_profiler must be False.
-        use_profiler (bool): True if the plasma store should be started inside
-            a profiler. If this is True, use_valgrind must be False.
-        plasma_directory (str): Directory where plasma memory mapped files
-            will be stored.
-        use_hugepages (bool): True if the plasma store should use huge pages.
-        external_store (str): External store to use for evicted objects.
-    Return:
-        A tuple of the name of the plasma store socket and the process ID of
-            the plasma store process.
     """
+    DEPRECATED: Start a plasma store process.
+
+    .. deprecated:: 10.0.0
+       Plasma is deprecated since Arrow 10.0.0. It will be removed
+       in 12.0.0 or so.
+
+    Parameters
+    ----------
+    plasma_store_memory : int
+        Capacity of the plasma store in bytes.
+    use_valgrind : bool
+        True if the plasma store should be started inside of valgrind. If this
+        is True, use_profiler must be False.
+    use_profiler : bool
+        True if the plasma store should be started inside a profiler. If this
+        is True, use_valgrind must be False.
+    plasma_directory : str
+        Directory where plasma memory mapped files will be stored.
+    use_hugepages : bool
+        True if the plasma store should use huge pages.
+    external_store : str
+        External store to use for evicted objects.
+
+    Yields
+    -------
+    plasma_store_name : str
+        Name of the plasma store socket
+    proc : subprocess.Popen
+        Process ID of the plasma store process
+    """
+    warnings.warn(
+        "Plasma is deprecated since Arrow 10.0.0. It will be removed in "
+        "12.0.0 or so.",
+        DeprecationWarning)
+
     if use_valgrind and use_profiler:
         raise Exception("Cannot use valgrind and profiler at the same time.")
 

@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apache/arrow/go/v7/arrow"	
+	"github.com/apache/arrow/go/v12/arrow"	
 	"github.com/goccy/go-json"
 )
 
@@ -34,10 +34,10 @@ type {{.Name}} struct {
 }
 
 // New{{.Name}}Data creates a new {{.Name}}.
-func New{{.Name}}Data(data *Data) *{{.Name}} {
+func New{{.Name}}Data(data arrow.ArrayData) *{{.Name}} {
 	a := &{{.Name}}{}
 	a.refCount = 1
-	a.setData(data)
+	a.setData(data.(*Data))
 	return a
 }
 

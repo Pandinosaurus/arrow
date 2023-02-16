@@ -94,7 +94,7 @@ void ConvertToVector(const FlatbufferVectorPointer fbvector, std::vector<T>* out
                      const Converter& converter) {
   out->clear();
   out->reserve(fbvector->size());
-  for (size_t i = 0; i < fbvector->size(); ++i) {
+  for (flatbuffers::uoffset_t i = 0; i < fbvector->size(); ++i) {
     out->push_back(converter(*fbvector->Get(i)));
   }
 }
@@ -583,7 +583,7 @@ Status ReadListReply(const uint8_t* data, size_t size, ObjectTable* objects) {
   DCHECK(VerifyFlatbuffer(message, data, size));
   for (auto const object : *message->objects()) {
     ObjectID object_id = ObjectID::from_binary(object->object_id()->str());
-    auto entry = std::unique_ptr<ObjectTableEntry>(new ObjectTableEntry());
+    auto entry = std::make_unique<ObjectTableEntry>();
     entry->data_size = object->data_size();
     entry->metadata_size = object->metadata_size();
     entry->ref_count = object->ref_count();

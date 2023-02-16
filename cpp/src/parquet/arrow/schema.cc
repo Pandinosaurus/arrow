@@ -30,6 +30,7 @@
 #include "arrow/util/checked_cast.h"
 #include "arrow/util/key_value_metadata.h"
 #include "arrow/util/logging.h"
+#include "arrow/util/string.h"
 #include "arrow/util/value_parsing.h"
 
 #include "parquet/arrow/schema_internal.h"
@@ -44,6 +45,8 @@ using arrow::FieldVector;
 using arrow::KeyValueMetadata;
 using arrow::Status;
 using arrow::internal::checked_cast;
+using arrow::internal::EndsWith;
+using arrow::internal::ToChars;
 
 using ArrowType = arrow::DataType;
 using ArrowTypeId = arrow::Type;
@@ -78,7 +81,7 @@ Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
                    const ArrowWriterProperties& arrow_properties, NodePtr* out);
 
 Status ListToNode(const std::shared_ptr<::arrow::BaseListType>& type,
-                  const std::string& name, bool nullable,
+                  const std::string& name, bool nullable, int field_id,
                   const WriterProperties& properties,
                   const ArrowWriterProperties& arrow_properties, NodePtr* out) {
   NodePtr element;
@@ -89,12 +92,12 @@ Status ListToNode(const std::shared_ptr<::arrow::BaseListType>& type,
 
   NodePtr list = GroupNode::Make("list", Repetition::REPEATED, {element});
   *out = GroupNode::Make(name, RepetitionFromNullable(nullable), {list},
-                         LogicalType::List());
+                         LogicalType::List(), field_id);
   return Status::OK();
 }
 
 Status MapToNode(const std::shared_ptr<::arrow::MapType>& type, const std::string& name,
-                 bool nullable, const WriterProperties& properties,
+                 bool nullable, int field_id, const WriterProperties& properties,
                  const ArrowWriterProperties& arrow_properties, NodePtr* out) {
   // TODO: Should we offer a non-compliant mode that forwards the type names?
   NodePtr key_node;
@@ -108,12 +111,12 @@ Status MapToNode(const std::shared_ptr<::arrow::MapType>& type, const std::strin
   NodePtr key_value =
       GroupNode::Make("key_value", Repetition::REPEATED, {key_node, value_node});
   *out = GroupNode::Make(name, RepetitionFromNullable(nullable), {key_value},
-                         LogicalType::Map());
+                         LogicalType::Map(), field_id);
   return Status::OK();
 }
 
 Status StructToNode(const std::shared_ptr<::arrow::StructType>& type,
-                    const std::string& name, bool nullable,
+                    const std::string& name, bool nullable, int field_id,
                     const WriterProperties& properties,
                     const ArrowWriterProperties& arrow_properties, NodePtr* out) {
   std::vector<NodePtr> children(type->num_fields());
@@ -131,7 +134,8 @@ Status StructToNode(const std::shared_ptr<::arrow::StructType>& type,
                                   "Consider adding a dummy child field.");
   }
 
-  *out = GroupNode::Make(name, RepetitionFromNullable(nullable), std::move(children));
+  *out = GroupNode::Make(name, RepetitionFromNullable(nullable), std::move(children),
+                         nullptr, field_id);
   return Status::OK();
 }
 
@@ -242,7 +246,7 @@ static constexpr char FIELD_ID_KEY[] = "PARQUET:field_id";
 
 std::shared_ptr<::arrow::KeyValueMetadata> FieldIdMetadata(int field_id) {
   if (field_id >= 0) {
-    return ::arrow::key_value_metadata({FIELD_ID_KEY}, {std::to_string(field_id)});
+    return ::arrow::key_value_metadata({FIELD_ID_KEY}, {ToChars(field_id)});
   } else {
     return nullptr;
   }
@@ -278,6 +282,7 @@ Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
   std::shared_ptr<const LogicalType> logical_type = LogicalType::None();
   ParquetType::type type;
   Repetition::type repetition = RepetitionFromNullable(field->nullable());
+  int field_id = FieldIdFromMetadata(field->metadata());
 
   int length = -1;
   int precision = -1;
@@ -351,11 +356,15 @@ Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
     } break;
     case ArrowTypeId::DECIMAL128:
     case ArrowTypeId::DECIMAL256: {
-      type = ParquetType::FIXED_LEN_BYTE_ARRAY;
       const auto& decimal_type = static_cast<const ::arrow::DecimalType&>(*field->type());
       precision = decimal_type.precision();
       scale = decimal_type.scale();
-      length = DecimalType::DecimalSize(precision);
+      if (properties.store_decimal_as_integer() && 1 <= precision && precision <= 18) {
+        type = precision <= 9 ? ParquetType ::INT32 : ParquetType ::INT64;
+      } else {
+        type = ParquetType::FIXED_LEN_BYTE_ARRAY;
+        length = DecimalType::DecimalSize(precision);
+      }
       PARQUET_CATCH_NOT_OK(logical_type = LogicalType::Decimal(precision, scale));
     } break;
     case ArrowTypeId::DATE32:
@@ -387,17 +396,20 @@ Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
             LogicalType::Time(/*is_adjusted_to_utc=*/true, LogicalType::TimeUnit::MICROS);
       }
     } break;
+    case ArrowTypeId::DURATION:
+      type = ParquetType::INT64;
+      break;
     case ArrowTypeId::STRUCT: {
       auto struct_type = std::static_pointer_cast<::arrow::StructType>(field->type());
-      return StructToNode(struct_type, name, field->nullable(), properties,
+      return StructToNode(struct_type, name, field->nullable(), field_id, properties,
                           arrow_properties, out);
     }
     case ArrowTypeId::FIXED_SIZE_LIST:
     case ArrowTypeId::LARGE_LIST:
     case ArrowTypeId::LIST: {
       auto list_type = std::static_pointer_cast<::arrow::BaseListType>(field->type());
-      return ListToNode(list_type, name, field->nullable(), properties, arrow_properties,
-                        out);
+      return ListToNode(list_type, name, field->nullable(), field_id, properties,
+                        arrow_properties, out);
     }
     case ArrowTypeId::DICTIONARY: {
       // Parquet has no Dictionary type, dictionary-encoded is handled on
@@ -416,8 +428,8 @@ Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
     }
     case ArrowTypeId::MAP: {
       auto map_type = std::static_pointer_cast<::arrow::MapType>(field->type());
-      return MapToNode(map_type, name, field->nullable(), properties, arrow_properties,
-                       out);
+      return MapToNode(map_type, name, field->nullable(), field_id, properties,
+                       arrow_properties, out);
     }
 
     default: {
@@ -428,7 +440,6 @@ Status FieldToNode(const std::string& name, const std::shared_ptr<Field>& field,
     }
   }
 
-  int field_id = FieldIdFromMetadata(field->metadata());
   PARQUET_CATCH_NOT_OK(*out = PrimitiveNode::Make(name, repetition, logical_type, type,
                                                   length, field_id));
 
@@ -493,8 +504,8 @@ Status PopulateLeaf(int column_index, const std::shared_ptr<Field>& field,
 //   If the name is array or ends in _tuple, this should be a list of struct
 //   even for single child elements.
 bool HasStructListName(const GroupNode& node) {
-  ::arrow::util::string_view name{node.name()};
-  return name == "array" || name.ends_with("_tuple");
+  ::std::string_view name{node.name()};
+  return name == "array" || EndsWith(name, "_tuple");
 }
 
 Status GroupToStruct(const GroupNode& node, LevelInfo current_levels,
@@ -593,7 +604,7 @@ Status MapToSchemaField(const GroupNode& group, LevelInfo current_levels,
   key_value_field->level_info = current_levels;
 
   out->field = ::arrow::field(group.name(),
-                              ::arrow::map(key_field->field->type(), value_field->field),
+                              std::make_shared<::arrow::MapType>(key_value_field->field),
                               group.is_optional(), FieldIdMetadata(group.field_id()));
   out->level_info = current_levels;
   // At this point current levels contains the def level for this list,
@@ -760,7 +771,7 @@ Status NodeToSchemaField(const Node& node, LevelInfo current_levels,
                                   /*nullable=*/false, FieldIdMetadata(node.field_id()));
       out->level_info = current_levels;
       // At this point current_levels has consider this list the ancestor so restore
-      // the actual ancenstor.
+      // the actual ancestor.
       out->level_info.repeated_ancestor_def_level = repeated_ancestor_def_level;
       return Status::OK();
     } else {
@@ -913,6 +924,13 @@ Result<bool> ApplyOriginalStorageMetadata(const Field& origin_field,
         inferred->field = inferred->field->WithType(ts_type_new);
       }
     }
+    modified = true;
+  }
+
+  if (origin_type->id() == ::arrow::Type::DURATION &&
+      inferred_type->id() == ::arrow::Type::INT64) {
+    // Read back int64 arrays as duration.
+    inferred->field = inferred->field->WithType(origin_type);
     modified = true;
   }
 

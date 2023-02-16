@@ -65,7 +65,7 @@ Type <- enum("Type::type",
   TIME64 = 20L,
   INTERVAL_MONTHS = 21L,
   INTERVAL_DAY_TIME = 22L,
-  DECIMAL = 23L,
+  DECIMAL128 = 23L,
   DECIMAL256 = 24L,
   LIST = 25L,
   STRUCT = 26L,
@@ -82,6 +82,13 @@ Type <- enum("Type::type",
 )
 
 TYPES_WITH_NAN <- Type[c("HALF_FLOAT", "FLOAT", "DOUBLE")]
+TYPES_NUMERIC <- Type[
+  c(
+    "INT8", "UINT8", "INT16", "UINT16", "INT32", "UINT32",
+    "INT64", "UINT64", "HALF_FLOAT", "FLOAT", "DOUBLE",
+    "DECIMAL128", "DECIMAL256"
+    )
+  ]
 
 #' @rdname enums
 #' @export
@@ -122,7 +129,7 @@ FileType <- enum("FileType",
 #' @export
 #' @rdname enums
 ParquetVersionType <- enum("ParquetVersionType",
-  PARQUET_1_0 = 0L, PARQUET_2_0 = 1L
+  PARQUET_1_0 = 0L, PARQUET_2_0 = 1L, PARQUET_2_4 = 2L, PARQUET_2_6 = 3L
 )
 
 #' @export

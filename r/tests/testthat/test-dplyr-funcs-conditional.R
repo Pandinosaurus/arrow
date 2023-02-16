@@ -15,8 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-skip_if_not_available("dataset")
-
 library(dplyr, warn.conflicts = FALSE)
 suppressPackageStartupMessages(library(bit64))
 
@@ -29,7 +27,8 @@ test_that("if_else and ifelse", {
   compare_dplyr_binding(
     .input %>%
       mutate(
-        y = if_else(int > 5, 1, 0)
+        y = if_else(int > 5, 1, 0),
+        y2 = dplyr::if_else(int > 6, 1, 0)
       ) %>%
       collect(),
     tbl
@@ -50,7 +49,7 @@ test_that("if_else and ifelse", {
         y = if_else(int > 5, 1, FALSE)
       ) %>%
       collect(),
-    "NotImplemented: Function if_else has no kernel matching input types"
+    "NotImplemented: Function 'if_else' has no kernel matching input types"
   )
 
   compare_dplyr_binding(
@@ -65,7 +64,8 @@ test_that("if_else and ifelse", {
   compare_dplyr_binding(
     .input %>%
       mutate(
-        y = ifelse(int > 5, 1, 0)
+        y = ifelse(int > 5, 1, 0),
+        y2 = base::ifelse(int > 6, 1, 0)
       ) %>%
       collect(),
     tbl
@@ -116,18 +116,20 @@ test_that("if_else and ifelse", {
     tbl
   )
 
-  # TODO: remove the mutate + warning after ARROW-13358 is merged and Arrow
-  # supports factors in if(_)else
   compare_dplyr_binding(
     .input %>%
       mutate(
         y = if_else(int > 5, fct, factor("a"))
       ) %>%
       collect() %>%
-      # This is a no-op on the Arrow side, but necessary to make the results equal
-      mutate(y = as.character(y)),
-    tbl,
-    warning = "Dictionaries .* are currently converted to strings .* in if_else and ifelse"
+      # Arrow if_else() kernel does not preserve unused factor levels,
+      # so reset the levels of all the factor columns to make the test pass
+      # (ARROW-14649)
+      transmute(across(
+        where(is.factor),
+        ~ factor(.x, levels = c("a", "b", "c", "d", "g", "h", "i", "j"))
+      )),
+    tbl
   )
 
   # detecting NA and NaN works just fine
@@ -182,6 +184,18 @@ test_that("case_when()", {
   compare_dplyr_binding(
     .input %>%
       filter(case_when(
+        dbl + int - 1.1 == dbl2 ~ TRUE,
+        NA ~ NA,
+        TRUE ~ FALSE
+      ) & !is.na(dbl2)) %>%
+      collect(),
+    tbl
+  )
+
+  # with namespacing
+  compare_dplyr_binding(
+    .input %>%
+      filter(dplyr::case_when(
         dbl + int - 1.1 == dbl2 ~ TRUE,
         NA ~ NA,
         TRUE ~ FALSE
@@ -301,6 +315,20 @@ test_that("coalesce()", {
     df
   )
 
+  # with namespacing
+  compare_dplyr_binding(
+    .input %>%
+      mutate(
+        cw = dplyr::coalesce(w),
+        cz = dplyr::coalesce(z),
+        cwx = dplyr::coalesce(w, x),
+        cwxy = dplyr::coalesce(w, x, y),
+        cwxyz = dplyr::coalesce(w, x, y, z)
+      ) %>%
+      collect(),
+    df
+  )
+
   # factor
   df_fct <- df %>%
     transmute(across(everything(), ~ factor(.x, levels = c("a", "b", "c"))))
@@ -405,7 +433,7 @@ test_that("coalesce()", {
 
   # no arguments
   expect_error(
-    nse_funcs$coalesce(),
+    call_binding("coalesce"),
     "At least one argument must be supplied to coalesce()",
     fixed = TRUE
   )

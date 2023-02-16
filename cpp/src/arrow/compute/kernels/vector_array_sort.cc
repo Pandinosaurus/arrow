@@ -25,7 +25,7 @@
 
 #include "arrow/array/data.h"
 #include "arrow/compute/api_vector.h"
-#include "arrow/compute/kernels/common.h"
+#include "arrow/compute/kernels/common_internal.h"
 #include "arrow/compute/kernels/util_internal.h"
 #include "arrow/compute/kernels/vector_sort_internal.h"
 #include "arrow/type_traits.h"
@@ -33,7 +33,7 @@
 #include "arrow/util/bitmap.h"
 #include "arrow/util/bitmap_ops.h"
 #include "arrow/util/checked_cast.h"
-#include "arrow/visitor_inline.h"
+#include "arrow/visit_type_inline.h"
 
 namespace arrow {
 
@@ -54,7 +54,7 @@ template <typename OutType, typename InType>
 struct PartitionNthToIndices {
   using ArrayType = typename TypeTraits<InType>::ArrayType;
 
-  static Status Exec(KernelContext* ctx, const ExecBatch& batch, Datum* out) {
+  static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out) {
     using GetView = GetViewType<InType>;
 
     if (ctx->state() == nullptr) {
@@ -62,13 +62,13 @@ struct PartitionNthToIndices {
     }
     const auto& options = PartitionNthToIndicesState::Get(ctx);
 
-    ArrayType arr(batch[0].array());
+    ArrayType arr(batch[0].array.ToArrayData());
 
     const int64_t pivot = options.pivot;
     if (pivot > arr.length()) {
       return Status::IndexError("NthToIndices index out of bound");
     }
-    ArrayData* out_arr = out->mutable_array();
+    ArrayData* out_arr = out->array_data().get();
     uint64_t* out_begin = out_arr->GetMutableValues<uint64_t>(1);
     uint64_t* out_end = out_begin + arr.length();
     std::iota(out_begin, out_end, 0);
@@ -92,11 +92,11 @@ struct PartitionNthToIndices {
 
 template <typename OutType>
 struct PartitionNthToIndices<OutType, NullType> {
-  static Status Exec(KernelContext* ctx, const ExecBatch& batch, Datum* out) {
+  static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out) {
     if (ctx->state() == nullptr) {
       return Status::Invalid("NthToIndices requires PartitionNthOptions");
     }
-    ArrayData* out_arr = out->mutable_array();
+    ArrayData* out_arr = out->array_data().get();
     uint64_t* out_begin = out_arr->GetMutableValues<uint64_t>(1);
     uint64_t* out_end = out_begin + batch.length;
     std::iota(out_begin, out_end, 0);
@@ -107,30 +107,32 @@ struct PartitionNthToIndices<OutType, NullType> {
 // ----------------------------------------------------------------------
 // Array sorting implementations
 
-template <typename ArrayType, typename VisitorNotNull, typename VisitorNull>
-inline void VisitRawValuesInline(const ArrayType& values,
+template <typename c_type, typename VisitorNotNull, typename VisitorNull>
+inline void VisitRawValuesInline(const ArraySpan& values,
                                  VisitorNotNull&& visitor_not_null,
                                  VisitorNull&& visitor_null) {
-  const auto data = values.raw_values();
+  const c_type* data = values.GetValues<c_type>(1);
+  const uint8_t* bitmap = values.buffers[0].data;
   VisitBitBlocksVoid(
-      values.null_bitmap(), values.offset(), values.length(),
-      [&](int64_t i) { visitor_not_null(data[i]); }, [&]() { visitor_null(); });
+      bitmap, values.offset, values.length, [&](int64_t i) { visitor_not_null(data[i]); },
+      [&]() { visitor_null(); });
 }
 
 template <typename VisitorNotNull, typename VisitorNull>
-inline void VisitRawValuesInline(const BooleanArray& values,
+inline void VisitRawValuesInline(const ArraySpan& values,
                                  VisitorNotNull&& visitor_not_null,
                                  VisitorNull&& visitor_null) {
-  if (values.null_count() != 0) {
-    const uint8_t* data = values.data()->GetValues<uint8_t>(1, 0);
+  if (values.null_count != 0) {
+    const uint8_t* data = values.GetValues<uint8_t>(1, 0);
+    const uint8_t* bitmap = values.buffers[0].data;
     VisitBitBlocksVoid(
-        values.null_bitmap(), values.offset(), values.length(),
-        [&](int64_t i) { visitor_not_null(BitUtil::GetBit(data, values.offset() + i)); },
+        bitmap, values.offset, values.length,
+        [&](int64_t i) { visitor_not_null(bit_util::GetBit(data, values.offset + i)); },
         [&]() { visitor_null(); });
   } else {
     // Can avoid GetBit() overhead in the no-nulls case
     VisitBitBlocksVoid(
-        values.data()->buffers[1], values.offset(), values.length(),
+        values.buffers[1].data, values.offset, values.length,
         [&](int64_t i) { visitor_not_null(true); }, [&]() { visitor_not_null(false); });
   }
 }
@@ -141,7 +143,6 @@ class ArrayCompareSorter {
   using GetView = GetViewType<ArrowType>;
 
  public:
-  // `offset` is used when this is called on a chunk of a chunked array
   NullPartitionResult operator()(uint64_t* indices_begin, uint64_t* indices_end,
                                  const Array& array, int64_t offset,
                                  const ArraySortOptions& options) {
@@ -205,7 +206,6 @@ class ArrayCountSorter {
   c_type min_{0};
   uint32_t value_range_{0};
 
-  // `offset` is used when this is called on a chunk of a chunked array
   template <typename CounterType>
   NullPartitionResult SortInternal(uint64_t* indices_begin, uint64_t* indices_end,
                                    const ArrayType& values, int64_t offset,
@@ -252,8 +252,8 @@ class ArrayCountSorter {
 
   template <typename CounterType>
   void CountValues(const ArrayType& values, CounterType* counts) const {
-    VisitRawValuesInline(
-        values, [&](c_type v) { ++counts[v - min_]; }, []() {});
+    VisitRawValuesInline<c_type>(
+        *values.data(), [&](c_type v) { ++counts[v - min_]; }, []() {});
   }
 
   template <typename CounterType>
@@ -261,8 +261,9 @@ class ArrayCountSorter {
                    CounterType* counts) const {
     int64_t index = offset;
     CounterType count_nulls = 0;
-    VisitRawValuesInline(
-        values, [&](c_type v) { p.non_nulls_begin[counts[v - min_]++] = index++; },
+    VisitRawValuesInline<c_type>(
+        *values.data(),
+        [&](c_type v) { p.non_nulls_begin[counts[v - min_]++] = index++; },
         [&]() { p.nulls_begin[count_nulls++] = index++; });
   }
 };
@@ -272,7 +273,6 @@ class ArrayCountSorter<BooleanType> {
  public:
   ArrayCountSorter() = default;
 
-  // `offset` is used when this is called on a chunk of a chunked array
   NullPartitionResult operator()(uint64_t* indices_begin, uint64_t* indices_end,
                                  const Array& array, int64_t offset,
                                  const ArraySortOptions& options) {
@@ -303,7 +303,7 @@ class ArrayCountSorter<BooleanType> {
 
     int64_t index = offset;
     VisitRawValuesInline(
-        values, [&](bool v) { p.non_nulls_begin[counts[v]++] = index++; },
+        *values.data(), [&](bool v) { p.non_nulls_begin[counts[v]++] = index++; },
         [&]() { p.nulls_begin[counts[2]++] = index++; });
     return p;
   }
@@ -318,7 +318,6 @@ class ArrayCountOrCompareSorter {
   using c_type = typename ArrowType::c_type;
 
  public:
-  // `offset` is used when this is called on a chunk of a chunked array
   NullPartitionResult operator()(uint64_t* indices_begin, uint64_t* indices_end,
                                  const Array& array, int64_t offset,
                                  const ArraySortOptions& options) {
@@ -436,63 +435,75 @@ template <typename OutType, typename InType>
 struct ArraySortIndices {
   using ArrayType = typename TypeTraits<InType>::ArrayType;
 
-  static Status Exec(KernelContext* ctx, const ExecBatch& batch, Datum* out) {
+  static Status Exec(KernelContext* ctx, const ExecSpan& batch, ExecResult* out) {
     const auto& options = ArraySortIndicesState::Get(ctx);
-    ArrayType arr(batch[0].array());
-    ARROW_ASSIGN_OR_RAISE(auto sorter, GetArraySorter(*GetPhysicalType(arr.type())));
-
-    ArrayData* out_arr = out->mutable_array();
+    ArrayData* out_arr = out->array_data().get();
     uint64_t* out_begin = out_arr->GetMutableValues<uint64_t>(1);
-    uint64_t* out_end = out_begin + arr.length();
+    uint64_t* out_end = out_begin + out_arr->length;
     std::iota(out_begin, out_end, 0);
+
+    ArrayType arr(batch[0].array.ToArrayData());
+    ARROW_ASSIGN_OR_RAISE(auto sorter, GetArraySorter(*GetPhysicalType(arr.type())));
 
     sorter(out_begin, out_end, arr, 0, options);
     return Status::OK();
   }
 };
 
+Status ArraySortIndicesChunked(KernelContext* ctx, const ExecBatch& batch, Datum* out) {
+  const auto& options = ArraySortIndicesState::Get(ctx);
+  ArrayData* out_arr = out->mutable_array();
+  DCHECK_EQ(out_arr->length, batch.length);
+  uint64_t* out_begin = out_arr->GetMutableValues<uint64_t>(1);
+  uint64_t* out_end = out_begin + out_arr->length;
+  std::iota(out_begin, out_end, 0);
+  return SortChunkedArray(ctx->exec_context(), out_begin, out_end,
+                          *batch[0].chunked_array(), options.order,
+                          options.null_placement)
+      .status();
+}
+
 template <template <typename...> class ExecTemplate>
 void AddArraySortingKernels(VectorKernel base, VectorFunction* func) {
   // null type
-  base.signature = KernelSignature::Make({InputType::Array(null())}, uint64());
+  base.signature = KernelSignature::Make({null()}, uint64());
   base.exec = ExecTemplate<UInt64Type, NullType>::Exec;
   DCHECK_OK(func->AddKernel(base));
 
   // bool type
-  base.signature = KernelSignature::Make({InputType::Array(boolean())}, uint64());
+  base.signature = KernelSignature::Make({boolean()}, uint64());
   base.exec = ExecTemplate<UInt64Type, BooleanType>::Exec;
   DCHECK_OK(func->AddKernel(base));
 
   // duration type
-  base.signature = KernelSignature::Make({InputType::Array(Type::DURATION)}, uint64());
+  base.signature = KernelSignature::Make({Type::DURATION}, uint64());
   base.exec = GenerateNumeric<ExecTemplate, UInt64Type>(*int64());
   DCHECK_OK(func->AddKernel(base));
 
   for (const auto& ty : NumericTypes()) {
     auto physical_type = GetPhysicalType(ty);
-    base.signature = KernelSignature::Make({InputType::Array(ty)}, uint64());
+    base.signature = KernelSignature::Make({ty}, uint64());
     base.exec = GenerateNumeric<ExecTemplate, UInt64Type>(*physical_type);
     DCHECK_OK(func->AddKernel(base));
   }
   for (const auto& ty : TemporalTypes()) {
     auto physical_type = GetPhysicalType(ty);
-    base.signature = KernelSignature::Make({InputType::Array(ty->id())}, uint64());
+    base.signature = KernelSignature::Make({ty->id()}, uint64());
     base.exec = GenerateNumeric<ExecTemplate, UInt64Type>(*physical_type);
     DCHECK_OK(func->AddKernel(base));
   }
   for (const auto id : {Type::DECIMAL128, Type::DECIMAL256}) {
-    base.signature = KernelSignature::Make({InputType::Array(id)}, uint64());
+    base.signature = KernelSignature::Make({id}, uint64());
     base.exec = GenerateDecimal<ExecTemplate, UInt64Type>(id);
     DCHECK_OK(func->AddKernel(base));
   }
   for (const auto& ty : BaseBinaryTypes()) {
     auto physical_type = GetPhysicalType(ty);
-    base.signature = KernelSignature::Make({InputType::Array(ty)}, uint64());
+    base.signature = KernelSignature::Make({ty}, uint64());
     base.exec = GenerateVarBinaryBase<ExecTemplate, UInt64Type>(*physical_type);
     DCHECK_OK(func->AddKernel(base));
   }
-  base.signature =
-      KernelSignature::Make({InputType::Array(Type::FIXED_SIZE_BINARY)}, uint64());
+  base.signature = KernelSignature::Make({Type::FIXED_SIZE_BINARY}, uint64());
   base.exec = ExecTemplate<UInt64Type, FixedSizeBinaryType>::Exec;
   DCHECK_OK(func->AddKernel(base));
 }
@@ -529,7 +540,7 @@ const FunctionDoc partition_nth_indices_doc(
      "\n"
      "The pivot index `N` must be given in PartitionNthOptions.\n"
      "The handling of nulls and NaNs can also be changed in PartitionNthOptions."),
-    {"array"}, "PartitionNthOptions");
+    {"array"}, "PartitionNthOptions", /*options_required=*/true);
 
 }  // namespace
 
@@ -543,17 +554,19 @@ void RegisterVectorArraySort(FunctionRegistry* registry) {
   VectorKernel base;
   base.mem_allocation = MemAllocation::PREALLOCATE;
   base.null_handling = NullHandling::OUTPUT_NOT_NULL;
+  base.can_execute_chunkwise = false;
 
   auto array_sort_indices = std::make_shared<VectorFunction>(
-      "array_sort_indices", Arity::Unary(), &array_sort_indices_doc,
+      "array_sort_indices", Arity::Unary(), array_sort_indices_doc,
       GetDefaultArraySortOptions());
   base.init = ArraySortIndicesState::Init;
+  base.exec_chunked = ArraySortIndicesChunked;
   AddArraySortingKernels<ArraySortIndices>(base, array_sort_indices.get());
   DCHECK_OK(registry->AddFunction(std::move(array_sort_indices)));
 
   // partition_nth_indices has a parameter so needs its init function
   auto part_indices = std::make_shared<VectorFunction>(
-      "partition_nth_indices", Arity::Unary(), &partition_nth_indices_doc);
+      "partition_nth_indices", Arity::Unary(), partition_nth_indices_doc);
   base.init = PartitionNthToIndicesState::Init;
   AddArraySortingKernels<PartitionNthToIndices>(base, part_indices.get());
   DCHECK_OK(registry->AddFunction(std::move(part_indices)));

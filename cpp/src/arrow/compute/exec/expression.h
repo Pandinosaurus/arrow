@@ -22,16 +22,20 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "arrow/compute/type_fwd.h"
 #include "arrow/datum.h"
 #include "arrow/type_fwd.h"
 #include "arrow/util/small_vector.h"
-#include "arrow/util/variant.h"
 
 namespace arrow {
 namespace compute {
+
+/// \defgroup expression-core Expressions to describe transformations in execution plans
+///
+/// @{
 
 /// An unbound expression which maps a single Datum to another Datum.
 /// An expression is one of
@@ -51,7 +55,7 @@ class ARROW_EXPORT Expression {
     std::shared_ptr<Function> function;
     const Kernel* kernel = NULLPTR;
     std::shared_ptr<KernelState> kernel_state;
-    ValueDescr descr;
+    TypeHolder type;
 
     void ComputeHash();
   };
@@ -66,7 +70,7 @@ class ARROW_EXPORT Expression {
   /// Bind this expression to the given input type, looking up Kernels and field types.
   /// Some expression simplification may be performed and implicit casts will be inserted.
   /// Any state necessary for execution will be initialized and returned.
-  Result<Expression> Bind(const ValueDescr& in, ExecContext* = NULLPTR) const;
+  Result<Expression> Bind(const TypeHolder& in, ExecContext* = NULLPTR) const;
   Result<Expression> Bind(const Schema& in_schema, ExecContext* = NULLPTR) const;
 
   // XXX someday
@@ -78,8 +82,8 @@ class ARROW_EXPORT Expression {
   // Result<ExpressionState> CloneState() const;
   // Status SetState(ExpressionState);
 
-  /// Return true if all an expression's field references have explicit ValueDescr and all
-  /// of its functions' kernels are looked up.
+  /// Return true if all an expression's field references have explicit types
+  /// and all of its functions' kernels are looked up.
   bool IsBound() const;
 
   /// Return true if this expression is composed only of Scalar literals, field
@@ -89,11 +93,14 @@ class ARROW_EXPORT Expression {
   /// Return true if this expression is literal and entirely null.
   bool IsNullLiteral() const;
 
-  /// Return true if this expression could evaluate to true.
+  /// Return true if this expression could evaluate to true. Will return true for any
+  /// unbound, non-boolean, or unsimplified Expressions
   bool IsSatisfiable() const;
 
   // XXX someday
   // Result<PipelineGraph> GetPipelines();
+
+  bool is_valid() const { return impl_ != NULLPTR; }
 
   /// Access a Call or return nullptr if this expression is not a call
   const Call* call() const;
@@ -102,9 +109,8 @@ class ARROW_EXPORT Expression {
   /// Access a FieldRef or return nullptr if this expression is not a field_ref
   const FieldRef* field_ref() const;
 
-  /// The type and shape to which this expression will evaluate
-  ValueDescr descr() const;
-  std::shared_ptr<DataType> type() const { return descr().type; }
+  /// The type to which this expression will evaluate
+  const DataType* type() const;
   // XXX someday
   // NullGeneralization::type nullable() const;
 
@@ -112,8 +118,8 @@ class ARROW_EXPORT Expression {
     FieldRef ref;
 
     // post-bind properties
-    ValueDescr descr;
-    internal::SmallVector<int, 2> indices;
+    TypeHolder type;
+    ::arrow::internal::SmallVector<int, 2> indices;
   };
   const Parameter* parameter() const;
 
@@ -123,16 +129,16 @@ class ARROW_EXPORT Expression {
   explicit Expression(Parameter parameter);
 
  private:
-  using Impl = util::Variant<Datum, Parameter, Call>;
+  using Impl = std::variant<Datum, Parameter, Call>;
   std::shared_ptr<Impl> impl_;
 
-  ARROW_EXPORT friend bool Identical(const Expression& l, const Expression& r);
-
-  ARROW_EXPORT friend void PrintTo(const Expression&, std::ostream*);
+  ARROW_FRIEND_EXPORT friend bool Identical(const Expression& l, const Expression& r);
 };
 
 inline bool operator==(const Expression& l, const Expression& r) { return l.Equals(r); }
 inline bool operator!=(const Expression& l, const Expression& r) { return !l.Equals(r); }
+
+ARROW_EXPORT void PrintTo(const Expression&, std::ostream*);
 
 // Factories
 
@@ -167,11 +173,15 @@ std::vector<FieldRef> FieldsInExpression(const Expression&);
 ARROW_EXPORT
 bool ExpressionHasFieldRefs(const Expression&);
 
-/// Assemble a mapping from field references to known values.
 struct ARROW_EXPORT KnownFieldValues;
+
+/// Assemble a mapping from field references to known values. This derives known values
+/// from "equal" and "is_null" Expressions referencing a field and a literal.
 ARROW_EXPORT
 Result<KnownFieldValues> ExtractKnownFieldValues(
     const Expression& guaranteed_true_predicate);
+
+/// @}
 
 /// \defgroup expression-passes Functions for modification of Expressions
 ///
@@ -210,6 +220,12 @@ ARROW_EXPORT
 Result<Expression> SimplifyWithGuarantee(Expression,
                                          const Expression& guaranteed_true_predicate);
 
+/// Replace all named field refs (e.g. "x" or "x.y") with field paths (e.g. [0] or [1,3])
+///
+/// This isn't usually needed and does not offer any simplification by itself.  However,
+/// it can be useful to normalize an expression to paths to make it simpler to work with.
+ARROW_EXPORT Result<Expression> RemoveNamedRefs(Expression expression);
+
 /// @}
 
 // Execution
@@ -218,7 +234,8 @@ Result<Expression> SimplifyWithGuarantee(Expression,
 /// RecordBatch which may have missing or incorrectly ordered columns.
 /// Missing fields will be replaced with null scalars.
 ARROW_EXPORT Result<ExecBatch> MakeExecBatch(const Schema& full_schema,
-                                             const Datum& partial);
+                                             const Datum& partial,
+                                             Expression guarantee = literal(true));
 
 /// Execute a scalar expression against the provided state and input ExecBatch. This
 /// expression must be bound.
@@ -239,7 +256,9 @@ Result<std::shared_ptr<Buffer>> Serialize(const Expression&);
 ARROW_EXPORT
 Result<Expression> Deserialize(std::shared_ptr<Buffer>);
 
-// Convenience aliases for factories
+/// \defgroup expression-convenience Functions convenient expression creation
+///
+/// @{
 
 ARROW_EXPORT Expression project(std::vector<Expression> values,
                                 std::vector<std::string> names);
@@ -265,6 +284,8 @@ ARROW_EXPORT Expression and_(const std::vector<Expression>&);
 ARROW_EXPORT Expression or_(Expression lhs, Expression rhs);
 ARROW_EXPORT Expression or_(const std::vector<Expression>&);
 ARROW_EXPORT Expression not_(Expression operand);
+
+/// @}
 
 }  // namespace compute
 }  // namespace arrow

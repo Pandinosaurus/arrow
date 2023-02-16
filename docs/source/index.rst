@@ -44,10 +44,10 @@ target environment.**
    C/GLib <c_glib/index>
    C++ <cpp/index>
    C# <https://github.com/apache/arrow/blob/master/csharp/README.md>
-   Go <https://godoc.org/github.com/apache/arrow/go/arrow>
+   Go <https://pkg.go.dev/github.com/apache/arrow/go>
    Java <java/index>
    JavaScript <js/index>
-   Julia <https://github.com/apache/arrow/blob/master/julia/Arrow/README.md>
+   Julia <https://github.com/apache/arrow-julia/blob/main/README.md>
    MATLAB <https://github.com/apache/arrow/blob/master/matlab/README.md>
    Python <python/index>
    R <r/index>
@@ -62,6 +62,7 @@ target environment.**
    :caption: Cookbooks
 
    C++ <https://arrow.apache.org/cookbook/cpp/>
+   Java <https://arrow.apache.org/cookbook/java/>
    Python <https://arrow.apache.org/cookbook/py/>
    R <https://arrow.apache.org/cookbook/r/>
 
@@ -73,11 +74,15 @@ target environment.**
 
    format/Versioning
    format/Columnar
+   format/CanonicalExtensions
    format/Flight
+   format/FlightSql
    format/Integration
    format/CDataInterface
    format/CStreamInterface
-   format/Other   
+   format/ADBC
+   format/Other
+   format/Glossary
 
 .. _toc.development:
 
@@ -86,11 +91,14 @@ target environment.**
    :caption: Development
 
    developers/contributing
+   developers/bug_reports
+   developers/guide/index
+   developers/overview
+   developers/reviewing
    developers/cpp/index
+   developers/java/index
    developers/python
-   developers/archery
-   developers/crossbow
-   developers/docker
+   developers/continuous_integration/index
    developers/benchmarks
    developers/documentation
-   developers/computeir
+   developers/release

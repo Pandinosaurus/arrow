@@ -71,13 +71,13 @@ Result<std::shared_ptr<ArrayData>> HashJoinDictUtil::IndexRemapUsingLUT(
   uint8_t* nns = result->buffers[0]->mutable_data();
   int32_t* ids = reinterpret_cast<int32_t*>(result->buffers[1]->mutable_data());
   for (int64_t i = 0; i < batch_length; ++i) {
-    bool is_null = !BitUtil::GetBit(nns, i);
+    bool is_null = !bit_util::GetBit(nns, i);
     if (is_null) {
       ids[i] = kNullId;
     } else {
       ARROW_DCHECK(ids[i] >= 0 && ids[i] < map_array->length);
-      if (!BitUtil::GetBit(map_non_nulls, ids[i])) {
-        BitUtil::ClearBit(nns, i);
+      if (!bit_util::GetBit(map_non_nulls, ids[i])) {
+        bit_util::ClearBit(nns, i);
         ids[i] = kNullId;
       } else {
         ids[i] = map[ids[i]];
@@ -102,7 +102,7 @@ static Result<std::shared_ptr<ArrayData>> ConvertImp(
   ARROW_ASSIGN_OR_RAISE(std::shared_ptr<Buffer> to_nn_buf,
                         AllocateBitmap(batch_length, ctx->memory_pool()));
   uint8_t* to_nn = to_nn_buf->mutable_data();
-  memset(to_nn, 0xff, BitUtil::BytesForBits(batch_length));
+  memset(to_nn, 0xff, bit_util::BytesForBits(batch_length));
 
   if (!is_scalar) {
     const ArrayData& arr = *input.array();
@@ -115,9 +115,9 @@ static Result<std::shared_ptr<ArrayData>> ConvertImp(
       ARROW_DCHECK(static_cast<FROM>(to[i]) == from[i]);
 
       bool is_null = (arr.buffers[0] != NULLPTR) &&
-                     !BitUtil::GetBit(arr.buffers[0]->data(), arr.offset + i);
+                     !bit_util::GetBit(arr.buffers[0]->data(), arr.offset + i);
       if (is_null) {
-        BitUtil::ClearBit(to_nn, i);
+        bit_util::ClearBit(to_nn, i);
       }
     }
 
@@ -127,7 +127,7 @@ static Result<std::shared_ptr<ArrayData>> ConvertImp(
   } else {
     const auto& scalar = input.scalar_as<arrow::internal::PrimitiveScalarBase>();
     if (scalar.is_valid) {
-      const util::string_view data = scalar.view();
+      const std::string_view data = scalar.view();
       DCHECK_EQ(data.size(), sizeof(FROM));
       const FROM from = *reinterpret_cast<const FROM*>(data.data());
       const TO to_value = static_cast<TO>(from);
@@ -138,11 +138,11 @@ static Result<std::shared_ptr<ArrayData>> ConvertImp(
         to[i] = to_value;
       }
 
-      memset(to_nn, 0xff, BitUtil::BytesForBits(batch_length));
+      memset(to_nn, 0xff, bit_util::BytesForBits(batch_length));
       return ArrayData::Make(to_type, batch_length,
                              {std::move(to_nn_buf), std::move(to_buf)});
     } else {
-      memset(to_nn, 0, BitUtil::BytesForBits(batch_length));
+      memset(to_nn, 0, bit_util::BytesForBits(batch_length));
       return ArrayData::Make(to_type, batch_length,
                              {std::move(to_nn_buf), std::move(to_buf)});
     }
@@ -224,8 +224,8 @@ Status HashJoinDictBuild::Init(ExecContext* ctx, std::shared_ptr<Array> dictiona
 
   // Initialize encoder
   internal::RowEncoder encoder;
-  std::vector<ValueDescr> encoder_types;
-  encoder_types.emplace_back(value_type_, ValueDescr::ARRAY);
+  std::vector<TypeHolder> encoder_types;
+  encoder_types.emplace_back(value_type_);
   encoder.Init(encoder_types, ctx);
 
   // Encode all dictionary values
@@ -234,8 +234,7 @@ Status HashJoinDictBuild::Init(ExecContext* ctx, std::shared_ptr<Array> dictiona
     return Status::Invalid(
         "Dictionary length in hash join must fit into signed 32-bit integer.");
   }
-  ExecBatch batch({dictionary->data()}, length);
-  RETURN_NOT_OK(encoder.EncodeAndAppend(batch));
+  RETURN_NOT_OK(encoder.EncodeAndAppend(ExecSpan({*dictionary->data()}, length)));
 
   std::vector<int32_t> entries_to_take;
 
@@ -245,7 +244,7 @@ Status HashJoinDictBuild::Init(ExecContext* ctx, std::shared_ptr<Array> dictiona
                         AllocateBuffer(length * sizeof(int32_t), ctx->memory_pool()));
   uint8_t* non_nulls = non_nulls_buf->mutable_data();
   int32_t* ids = reinterpret_cast<int32_t*>(ids_buf->mutable_data());
-  memset(non_nulls, 0xff, BitUtil::BytesForBits(length));
+  memset(non_nulls, 0xff, bit_util::BytesForBits(length));
 
   int32_t num_entries = 0;
   for (int64_t i = 0; i < length; ++i) {
@@ -257,7 +256,7 @@ Status HashJoinDictBuild::Init(ExecContext* ctx, std::shared_ptr<Array> dictiona
     //
     if (internal::KeyEncoder::IsNull(reinterpret_cast<const uint8_t*>(str.data()))) {
       ids[i] = HashJoinDictUtil::kNullId;
-      BitUtil::ClearBit(non_nulls, i);
+      bit_util::ClearBit(non_nulls, i);
       continue;
     }
 
@@ -286,8 +285,7 @@ Result<std::shared_ptr<ArrayData>> HashJoinDictBuild::RemapInputValues(
   // Initialize encoder
   //
   internal::RowEncoder encoder;
-  std::vector<ValueDescr> encoder_types;
-  encoder_types.emplace_back(value_type_, ValueDescr::ARRAY);
+  std::vector<TypeHolder> encoder_types = {value_type_};
   encoder.Init(encoder_types, ctx);
 
   // Encode all
@@ -296,7 +294,7 @@ Result<std::shared_ptr<ArrayData>> HashJoinDictBuild::RemapInputValues(
   bool is_scalar = values.is_scalar();
   int64_t encoded_length = is_scalar ? 1 : batch_length;
   ExecBatch batch({values}, encoded_length);
-  RETURN_NOT_OK(encoder.EncodeAndAppend(batch));
+  RETURN_NOT_OK(encoder.EncodeAndAppend(ExecSpan(batch)));
 
   // Allocate output buffers
   //
@@ -307,7 +305,7 @@ Result<std::shared_ptr<ArrayData>> HashJoinDictBuild::RemapInputValues(
       AllocateBuffer(batch_length * sizeof(int32_t), ctx->memory_pool()));
   uint8_t* non_nulls = non_nulls_buf->mutable_data();
   int32_t* ids = reinterpret_cast<int32_t*>(ids_buf->mutable_data());
-  memset(non_nulls, 0xff, BitUtil::BytesForBits(batch_length));
+  memset(non_nulls, 0xff, bit_util::BytesForBits(batch_length));
 
   // Populate output buffers (for scalar only the first entry is populated)
   //
@@ -315,7 +313,7 @@ Result<std::shared_ptr<ArrayData>> HashJoinDictBuild::RemapInputValues(
     std::string str = encoder.encoded_row(static_cast<int32_t>(i));
     if (internal::KeyEncoder::IsNull(reinterpret_cast<const uint8_t*>(str.data()))) {
       // Map nulls to nulls
-      BitUtil::ClearBit(non_nulls, i);
+      bit_util::ClearBit(non_nulls, i);
       ids[i] = HashJoinDictUtil::kNullId;
     } else {
       auto iter = hash_table_.find(str);
@@ -330,8 +328,8 @@ Result<std::shared_ptr<ArrayData>> HashJoinDictBuild::RemapInputValues(
   // Generate array of repeated values for scalar input
   //
   if (is_scalar) {
-    if (!BitUtil::GetBit(non_nulls, 0)) {
-      memset(non_nulls, 0, BitUtil::BytesForBits(batch_length));
+    if (!bit_util::GetBit(non_nulls, 0)) {
+      memset(non_nulls, 0, bit_util::BytesForBits(batch_length));
     }
     for (int64_t i = 1; i < batch_length; ++i) {
       ids[i] = ids[0];
@@ -423,11 +421,10 @@ Result<std::shared_ptr<ArrayData>> HashJoinDictProbe::RemapInput(
             remapped_ids_,
             opt_build_side->RemapInputValues(ctx, Datum(dict->data()), dict->length()));
       } else {
-        std::vector<ValueDescr> encoder_types;
-        encoder_types.emplace_back(dict_type.value_type(), ValueDescr::ARRAY);
+        std::vector<TypeHolder> encoder_types = {dict_type.value_type()};
         encoder_.Init(encoder_types, ctx);
-        ExecBatch batch({dict->data()}, dict->length());
-        RETURN_NOT_OK(encoder_.EncodeAndAppend(batch));
+        RETURN_NOT_OK(
+            encoder_.EncodeAndAppend(ExecSpan({*dict->data()}, dict->length())));
       }
     }
 
@@ -447,7 +444,7 @@ Result<std::shared_ptr<ArrayData>> HashJoinDictProbe::RemapInput(
           reinterpret_cast<int32_t*>(row_ids_arr->buffers[1]->mutable_data());
       const uint8_t* non_nulls = row_ids_arr->buffers[0]->data();
       for (int64_t i = 0; i < batch_length; ++i) {
-        if (!BitUtil::GetBit(non_nulls, i)) {
+        if (!bit_util::GetBit(non_nulls, i)) {
           row_ids[i] = internal::RowEncoder::kRowIdForNulls();
         }
       }
@@ -517,14 +514,14 @@ void HashJoinDictBuildMulti::InitEncoder(
     const SchemaProjectionMaps<HashJoinProjection>& proj_map, RowEncoder* encoder,
     ExecContext* ctx) {
   int num_cols = proj_map.num_cols(HashJoinProjection::KEY);
-  std::vector<ValueDescr> data_types(num_cols);
+  std::vector<TypeHolder> data_types(num_cols);
   for (int icol = 0; icol < num_cols; ++icol) {
     std::shared_ptr<DataType> data_type =
         proj_map.data_type(HashJoinProjection::KEY, icol);
     if (HashJoinDictBuild::KeyNeedsProcessing(data_type)) {
       data_type = HashJoinDictBuild::DataTypeAfterRemapping();
     }
-    data_types[icol] = ValueDescr(data_type, ValueDescr::ARRAY);
+    data_types[icol] = data_type;
   }
   encoder->Init(data_types, ctx);
 }
@@ -547,7 +544,7 @@ Status HashJoinDictBuildMulti::EncodeBatch(
                                       proj_map.data_type(HashJoinProjection::KEY, icol)));
     }
   }
-  return encoder->EncodeAndAppend(projected);
+  return encoder->EncodeAndAppend(ExecSpan(projected));
 }
 
 Status HashJoinDictBuildMulti::PostDecode(
@@ -576,6 +573,7 @@ bool HashJoinDictProbeMulti::BatchRemapNeeded(
     size_t thread_index, const SchemaProjectionMaps<HashJoinProjection>& proj_map_probe,
     const SchemaProjectionMaps<HashJoinProjection>& proj_map_build, ExecContext* ctx) {
   InitLocalStateIfNeeded(thread_index, proj_map_probe, proj_map_build, ctx);
+  DCHECK_LT(thread_index, local_states_.size());
   return local_states_[thread_index].any_needs_remap;
 }
 
@@ -610,7 +608,7 @@ void HashJoinDictProbeMulti::InitEncoder(
     const SchemaProjectionMaps<HashJoinProjection>& proj_map_build, RowEncoder* encoder,
     ExecContext* ctx) {
   int num_cols = proj_map_probe.num_cols(HashJoinProjection::KEY);
-  std::vector<ValueDescr> data_types(num_cols);
+  std::vector<TypeHolder> data_types(num_cols);
   for (int icol = 0; icol < num_cols; ++icol) {
     std::shared_ptr<DataType> data_type =
         proj_map_probe.data_type(HashJoinProjection::KEY, icol);
@@ -619,7 +617,7 @@ void HashJoinDictProbeMulti::InitEncoder(
     if (HashJoinDictProbe::KeyNeedsProcessing(data_type, build_data_type)) {
       data_type = HashJoinDictProbe::DataTypeAfterRemapping(build_data_type);
     }
-    data_types[icol] = ValueDescr(data_type, ValueDescr::ARRAY);
+    data_types[icol] = data_type;
   }
   encoder->Init(data_types, ctx);
 }
@@ -655,7 +653,7 @@ Status HashJoinDictProbeMulti::EncodeBatch(
   }
 
   local_state.post_remap_encoder.Clear();
-  RETURN_NOT_OK(local_state.post_remap_encoder.EncodeAndAppend(projected));
+  RETURN_NOT_OK(local_state.post_remap_encoder.EncodeAndAppend(ExecSpan(projected)));
   *out_encoder = &local_state.post_remap_encoder;
 
   return Status::OK();

@@ -36,7 +36,9 @@ fi
 VERSION="$1"
 TYPE="$2"
 
-local_prefix="/arrow/dev/tasks/linux-packages"
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TOP_SOURCE_DIR="${SOURCE_DIR}/../.."
+local_prefix="${TOP_SOURCE_DIR}/dev/tasks/linux-packages"
 
 
 echo "::group::Prepare repository"
@@ -63,16 +65,27 @@ esac
 
 have_flight=yes
 have_plasma=yes
+have_python=yes
 workaround_missing_packages=()
 case "${distribution}-${code_name}" in
+  debian-bookworm)
+    sed \
+      -i"" \
+      -e "s/ main$/ main contrib non-free/g" \
+      /etc/apt/sources.list.d/debian.sources
+    ;;
   debian-*)
     sed \
       -i"" \
       -e "s/ main$/ main contrib non-free/g" \
       /etc/apt/sources.list
     ;;
+  ubuntu-bionic)
+    have_python=no
+    ;;
 esac
 if [ "$(arch)" = "aarch64" ]; then
+  have_flight=no
   have_plasma=no
 fi
 
@@ -143,20 +156,41 @@ required_packages+=(pkg-config)
 required_packages+=(${workaround_missing_packages[@]})
 ${APT_INSTALL} ${required_packages[@]}
 mkdir -p build
-cp -a /arrow/cpp/examples/minimal_build build
+cp -a "${TOP_SOURCE_DIR}/cpp/examples/minimal_build" build/
 pushd build/minimal_build
 cmake .
 make -j$(nproc)
-./arrow_example
-c++ -std=c++11 -o arrow_example example.cc $(pkg-config --cflags --libs arrow)
-./arrow_example
+./arrow-example
+c++ -std=c++17 -o arrow-example example.cc $(pkg-config --cflags --libs arrow)
+./arrow-example
 popd
 echo "::endgroup::"
 
 
 echo "::group::Test Apache Arrow GLib"
+export G_DEBUG=fatal-warnings
+
 ${APT_INSTALL} libarrow-glib-dev=${package_version}
 ${APT_INSTALL} libarrow-glib-doc=${package_version}
+
+${APT_INSTALL} valac
+cp -a "${TOP_SOURCE_DIR}/c_glib/example/vala" build/
+pushd build/vala
+valac --pkg arrow-glib --pkg posix build.vala
+./build
+popd
+
+
+${APT_INSTALL} ruby-dev rubygems-integration
+gem install gobject-introspection
+ruby -r gi -e "p GI.load('Arrow')"
+echo "::endgroup::"
+
+
+echo "::group::Test Apache Arrow Dataset"
+${APT_INSTALL} libarrow-dataset-glib-dev=${package_version}
+${APT_INSTALL} libarrow-dataset-glib-doc=${package_version}
+ruby -r gi -e "p GI.load('ArrowDataset')"
 echo "::endgroup::"
 
 
@@ -164,13 +198,15 @@ if [ "${have_flight}" = "yes" ]; then
   echo "::group::Test Apache Arrow Flight"
   ${APT_INSTALL} libarrow-flight-glib-dev=${package_version}
   ${APT_INSTALL} libarrow-flight-glib-doc=${package_version}
+  ruby -r gi -e "p GI.load('ArrowFlight')"
+  echo "::endgroup::"
+
+  echo "::group::Test Apache Arrow Flight SQL"
+  ${APT_INSTALL} libarrow-flight-sql-glib-dev=${package_version}
+  ${APT_INSTALL} libarrow-flight-sql-glib-doc=${package_version}
+  ruby -r gi -e "p GI.load('ArrowFlightSQL')"
   echo "::endgroup::"
 fi
-
-
-echo "::group::Test libarrow-python"
-${APT_INSTALL} libarrow-python-dev=${package_version}
-echo "::endgroup::"
 
 
 if [ "${have_plasma}" = "yes" ]; then
@@ -178,6 +214,7 @@ if [ "${have_plasma}" = "yes" ]; then
   ${APT_INSTALL} libplasma-glib-dev=${package_version}
   ${APT_INSTALL} libplasma-glib-doc=${package_version}
   ${APT_INSTALL} plasma-store-server=${package_version}
+  ruby -r gi -e "p GI.load('Plasma')"
   echo "::endgroup::"
 fi
 
@@ -185,10 +222,12 @@ fi
 echo "::group::Test Gandiva"
 ${APT_INSTALL} libgandiva-glib-dev=${package_version}
 ${APT_INSTALL} libgandiva-glib-doc=${package_version}
+ruby -r gi -e "p GI.load('Gandiva')"
 echo "::endgroup::"
 
 
-echo "::group::Test Parquet"
+echo "::group::Test Apache Parquet"
 ${APT_INSTALL} libparquet-glib-dev=${package_version}
 ${APT_INSTALL} libparquet-glib-doc=${package_version}
+ruby -r gi -e "p GI.load('Parquet')"
 echo "::endgroup::"

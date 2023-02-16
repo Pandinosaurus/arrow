@@ -38,11 +38,13 @@
 #include "arrow/ipc/writer.h"
 #include "arrow/pretty_print.h"
 #include "arrow/status.h"
+#include "arrow/testing/builder.h"
 #include "arrow/testing/extension_type.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/json_integration.h"
 #include "arrow/testing/json_internal.h"
 #include "arrow/testing/random.h"
+#include "arrow/testing/util.h"
 #include "arrow/type.h"
 #include "arrow/type_fwd.h"
 #include "arrow/util/io_util.h"
@@ -58,6 +60,10 @@ DEFINE_bool(
     validate_decimals, true,
     "Validate that decimal values are in range for the given precision (ARROW-13558: "
     "'golden' test data from previous versions may have out-of-range decimal values)");
+DEFINE_bool(validate_date64, true,
+            "Validate that values for DATE64 represent whole numbers of days");
+DEFINE_bool(validate_times, true,
+            "Validate that values for TIME32 and TIME64 are within their valid ranges");
 
 namespace arrow {
 
@@ -124,15 +130,23 @@ static Status ConvertArrowToJson(const std::string& arrow_path,
   return out_file->Write(result.c_str(), static_cast<int64_t>(result.size()));
 }
 
-// Validate the batch, accounting for the -validate_decimals flag
+// Validate the batch, accounting for the -validate_decimals , -validate_date64, and
+// -validate_times flags
 static Status ValidateFull(const RecordBatch& batch) {
-  if (FLAGS_validate_decimals) {
+  if (FLAGS_validate_decimals && FLAGS_validate_date64 && FLAGS_validate_times) {
     return batch.ValidateFull();
   }
-  // Decimal validation disabled, so individually validate columns
+  // Decimal, date64, or times32/64 validation disabled, so individually validate columns
   RETURN_NOT_OK(batch.Validate());
   for (const auto& column : batch.columns()) {
-    if (is_decimal(column->type()->id())) {
+    auto type_id = column->type()->id();
+    if (!FLAGS_validate_decimals && is_decimal(type_id)) {
+      continue;
+    }
+    if (!FLAGS_validate_date64 && type_id == Type::DATE64) {
+      continue;
+    }
+    if (!FLAGS_validate_times && (type_id == Type::TIME32 || type_id == Type::TIME64)) {
       continue;
     }
     RETURN_NOT_OK(column->ValidateFull());
@@ -858,15 +872,8 @@ TEST(TestJsonArrayWriter, PrimitiveTypes) {
 TEST(TestJsonArrayWriter, NestedTypes) {
   auto value_type = int32();
 
-  std::vector<bool> values_is_valid = {true, false, true, true, false, true, true};
-
-  std::vector<int32_t> values = {0, 1, 2, 3, 4, 5, 6};
-  std::shared_ptr<Array> values_array;
-  ArrayFromVector<Int32Type, int32_t>(values_is_valid, values, &values_array);
-
-  std::vector<int16_t> i16_values = {0, 1, 2, 3, 4, 5, 6};
-  std::shared_ptr<Array> i16_values_array;
-  ArrayFromVector<Int16Type, int16_t>(values_is_valid, i16_values, &i16_values_array);
+  auto values_array = ArrayFromJSON(int32(), "[0, null, 2, 3, null, 5, 6]");
+  auto i16_values_array = ArrayFromJSON(int32(), "[0, null, 2, 3, null, 5, 6]");
 
   // List
   std::vector<bool> list_is_valid = {true, false, true, true, true};
@@ -1016,16 +1023,10 @@ TEST(TestJsonFileReadWrite, JsonExample1) {
   std::shared_ptr<RecordBatch> batch;
   ReadOneBatchJson(json_example1, ex_schema, &batch);
 
-  std::vector<bool> foo_valid = {true, false, true, true, true};
-  std::vector<int32_t> foo_values = {1, 2, 3, 4, 5};
-  std::shared_ptr<Array> foo;
-  ArrayFromVector<Int32Type, int32_t>(foo_valid, foo_values, &foo);
+  auto foo = ArrayFromJSON(int32(), "[1, null, 3, 4, 5]");
   ASSERT_TRUE(batch->column(0)->Equals(foo));
 
-  std::vector<bool> bar_valid = {true, false, false, true, true};
-  std::vector<double> bar_values = {1, 2, 3, 4, 5};
-  std::shared_ptr<Array> bar;
-  ArrayFromVector<DoubleType, double>(bar_valid, bar_values, &bar);
+  auto bar = ArrayFromJSON(float64(), "[1, null, null, 4, 5]");
   ASSERT_TRUE(batch->column(1)->Equals(bar));
 }
 

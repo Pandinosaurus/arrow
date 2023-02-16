@@ -38,9 +38,8 @@
 #include "arrow/type_traits.h"
 #include "arrow/util/bitmap_reader.h"
 #include "arrow/util/checked_cast.h"
-#include "arrow/util/int_util_internal.h"
+#include "arrow/util/int_util_overflow.h"
 
-#include "arrow/testing/gtest_common.h"
 #include "arrow/testing/gtest_util.h"
 #include "arrow/testing/matchers.h"
 #include "arrow/testing/random.h"
@@ -145,9 +144,7 @@ void ValidateBooleanAgg(const std::string& json,
   SCOPED_TRACE(json);
   auto array = ArrayFromJSON(boolean(), json);
   ASSERT_OK_AND_ASSIGN(Datum result, Op(array, options, nullptr));
-
-  auto equal_options = EqualOptions::Defaults().nans_equal(true);
-  AssertScalarsEqual(*expected, *result.scalar(), /*verbose=*/true, equal_options);
+  AssertScalarsEqual(*expected, *result.scalar(), /*verbose=*/true);
 }
 
 TEST(TestBooleanAggregation, Sum) {
@@ -306,8 +303,7 @@ TEST(TestBooleanAggregation, Mean) {
   ASSERT_OK_AND_ASSIGN(
       auto result, Mean(MakeNullScalar(boolean()),
                         ScalarAggregateOptions(/*skip_nulls=*/true, /*min_count=*/0)));
-  AssertDatumsApproxEqual(result, ScalarFromJSON(float64(), "NaN"), /*detailed=*/true,
-                          EqualOptions::Defaults().nans_equal(true));
+  AssertDatumsApproxEqual(result, ScalarFromJSON(float64(), "NaN"), /*detailed=*/true);
   EXPECT_THAT(Mean(MakeNullScalar(boolean()),
                    ScalarAggregateOptions(/*skip_nulls=*/false, /*min_count=*/0)),
               ResultWith(ScalarFromJSON(float64(), "null")));
@@ -591,6 +587,32 @@ TEST(TestDecimalSumKernel, ScalarAggregateOptions) {
   }
 }
 
+TEST(TestNullSumKernel, Basics) {
+  auto ty = null();
+  Datum null_result = std::make_shared<Int64Scalar>();
+  Datum zero_result = std::make_shared<Int64Scalar>(0);
+
+  EXPECT_THAT(Sum(ScalarFromJSON(ty, "null")), ResultWith(null_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[]")), ResultWith(null_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[null]")), ResultWith(null_result));
+  EXPECT_THAT(Sum(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"})),
+              ResultWith(null_result));
+
+  ScalarAggregateOptions options(/*skip_nulls=*/true, /*min_count=*/0);
+  EXPECT_THAT(Sum(ScalarFromJSON(ty, "null"), options), ResultWith(zero_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[null]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Sum(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+              ResultWith(zero_result));
+
+  options = ScalarAggregateOptions(/*skip_nulls=*/false, /*min_count=*/0);
+  EXPECT_THAT(Sum(ScalarFromJSON(ty, "null"), options), ResultWith(null_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Sum(ArrayFromJSON(ty, "[null]"), options), ResultWith(null_result));
+  EXPECT_THAT(Sum(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+              ResultWith(null_result));
+}
+
 //
 // Product
 //
@@ -797,6 +819,34 @@ TEST(TestProductKernel, Overflow) {
               ResultWith(Datum(static_cast<int64_t>(8589934592))));
 }
 
+TEST(TestNullProductKernel, Basics) {
+  auto ty = null();
+  Datum null_result = std::make_shared<Int64Scalar>();
+  Datum one_result = std::make_shared<Int64Scalar>(1);
+
+  EXPECT_THAT(Product(ScalarFromJSON(ty, "null")), ResultWith(null_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[]")), ResultWith(null_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[null]")), ResultWith(null_result));
+  EXPECT_THAT(Product(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"})),
+              ResultWith(null_result));
+
+  ScalarAggregateOptions options(/*skip_nulls=*/true, /*min_count=*/0);
+  EXPECT_THAT(Product(ScalarFromJSON(ty, "null"), options), ResultWith(one_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[]"), options), ResultWith(one_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[null]"), options), ResultWith(one_result));
+  EXPECT_THAT(
+      Product(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+      ResultWith(one_result));
+
+  options = ScalarAggregateOptions(/*skip_nulls=*/false, /*min_count=*/0);
+  EXPECT_THAT(Product(ScalarFromJSON(ty, "null"), options), ResultWith(null_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[]"), options), ResultWith(one_result));
+  EXPECT_THAT(Product(ArrayFromJSON(ty, "[null]"), options), ResultWith(null_result));
+  EXPECT_THAT(
+      Product(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+      ResultWith(null_result));
+}
+
 //
 // Count
 //
@@ -892,12 +942,12 @@ class TestCountDistinctKernel : public ::testing::Test {
     CheckScalar("count_distinct", {input}, Expected(expected_all), &all);
   }
 
-  void Check(const std::shared_ptr<DataType>& type, util::string_view json,
+  void Check(const std::shared_ptr<DataType>& type, std::string_view json,
              int64_t expected_all, bool has_nulls = true) {
     Check(ArrayFromJSON(type, json), expected_all, has_nulls);
   }
 
-  void Check(const std::shared_ptr<DataType>& type, util::string_view json) {
+  void Check(const std::shared_ptr<DataType>& type, std::string_view json) {
     auto input = ScalarFromJSON(type, json);
     auto zero = ResultWith(Expected(0));
     auto one = ResultWith(Expected(1));
@@ -912,10 +962,82 @@ class TestCountDistinctKernel : public ::testing::Test {
     EXPECT_THAT(CallFunction("count_distinct", {input}, &all), one);
   }
 
+  void CheckChunkedArr(const std::shared_ptr<DataType>& type,
+                       const std::vector<std::string>& json, int64_t expected_all,
+                       bool has_nulls = true) {
+    Check(ChunkedArrayFromJSON(type, json), expected_all, has_nulls);
+  }
+
   CountOptions only_valid{CountOptions::ONLY_VALID};
   CountOptions only_null{CountOptions::ONLY_NULL};
   CountOptions all{CountOptions::ALL};
 };
+
+TEST_F(TestCountDistinctKernel, AllChunkedArrayTypesWithNulls) {
+  // Boolean
+  CheckChunkedArr(boolean(), {"[]", "[]"}, 0, /*has_nulls=*/false);
+  CheckChunkedArr(boolean(), {"[true, null]", "[false, null, false]", "[true]"}, 3);
+
+  // Number
+  for (auto ty : NumericTypes()) {
+    CheckChunkedArr(ty, {"[1, 1, null, 2]", "[5, 8, 9, 9, null, 10]", "[6, 6, 8, 9, 10]"},
+                    8);
+    CheckChunkedArr(ty, {"[1, 1, 8, 2]", "[5, 8, 9, 9, 10]", "[10, 6, 6]"}, 7,
+                    /*has_nulls=*/false);
+  }
+
+  // Date
+  CheckChunkedArr(date32(), {"[0, 11016]", "[0, null, 14241, 14241, null]"}, 4);
+  CheckChunkedArr(date64(), {"[0, null]", "[0, null, 0, 0, 1262217600000]"}, 3);
+
+  // Time
+  CheckChunkedArr(time32(TimeUnit::SECOND), {"[ 0, 11, 0, null]", "[14, 14, null]"}, 4);
+  CheckChunkedArr(time32(TimeUnit::MILLI), {"[ 0, 11000, 0]", "[null, 11000, 11000]"}, 3);
+
+  CheckChunkedArr(time64(TimeUnit::MICRO), {"[84203999999, 0, null, 84203999999]", "[0]"},
+                  3);
+  CheckChunkedArr(time64(TimeUnit::NANO),
+                  {"[11715003000000, 0, null, 0, 0]", "[0, 0, null]"}, 3);
+
+  // Timestamp & Duration
+  for (auto u : TimeUnit::values()) {
+    CheckChunkedArr(duration(u), {"[123456789, null, 987654321]", "[123456789, null]"},
+                    3);
+
+    CheckChunkedArr(duration(u),
+                    {"[123456789, 987654321, 123456789, 123456789]", "[123456789]"}, 2,
+                    /*has_nulls=*/false);
+
+    auto ts =
+        std::vector<std::string>{R"(["2009-12-31T04:20:20", "2009-12-31T04:20:20"])",
+                                 R"(["2020-01-01", null])", R"(["2020-01-01", null])"};
+    CheckChunkedArr(timestamp(u), ts, 3);
+    CheckChunkedArr(timestamp(u, "Pacific/Marquesas"), ts, 3);
+  }
+
+  // Interval
+  CheckChunkedArr(month_interval(), {"[9012, 5678, null, 9012]", "[5678, null, 9012]"},
+                  3);
+  CheckChunkedArr(day_time_interval(),
+                  {"[[0, 1], [0, 1]]", "[null, [0, 1], [1234, 5678]]"}, 3);
+  CheckChunkedArr(month_day_nano_interval(),
+                  {"[[0, 1, 2]]", "[[0, 1, 2], null, [0, 1, 2]]"}, 2);
+
+  // Binary & String & Fixed binary
+  auto samples = std::vector<std::string>{
+      R"([null, "abc", null])", R"(["abc", "abc", "cba"])", R"(["bca", "cba", null])"};
+
+  CheckChunkedArr(binary(), samples, 4);
+  CheckChunkedArr(large_binary(), samples, 4);
+  CheckChunkedArr(utf8(), samples, 4);
+  CheckChunkedArr(large_utf8(), samples, 4);
+  CheckChunkedArr(fixed_size_binary(3), samples, 4);
+
+  // Decimal
+  samples = {R"(["12345.679", "98765.421"])", R"([null, "12345.679", "98765.421"])"};
+  CheckChunkedArr(decimal128(21, 3), samples, 3);
+  CheckChunkedArr(decimal256(13, 3), samples, 3);
+}
 
 TEST_F(TestCountDistinctKernel, AllArrayTypesWithNulls) {
   // Boolean
@@ -1013,7 +1135,7 @@ TEST_F(TestCountDistinctKernel, Random) {
   };
   auto rand = random::RandomArrayGenerator(0x1205643);
   auto arr = rand.Numeric<UInt32Type>(1024, 0, 100, 0.0)->data();
-  auto r = VisitArrayDataInline<UInt32Type>(*arr, visit_value, visit_null);
+  auto r = VisitArraySpanInline<UInt32Type>(*arr, visit_value, visit_null);
   auto input = builder.Finish().ValueOrDie();
   Check(input, memo.size(), false);
 }
@@ -1039,8 +1161,7 @@ template <typename ArrowType>
 void ValidateMean(const Array& input, Datum expected,
                   const ScalarAggregateOptions& options) {
   ASSERT_OK_AND_ASSIGN(Datum result, Mean(input, options, nullptr));
-  auto equal_options = EqualOptions::Defaults().nans_equal(true);
-  AssertDatumsApproxEqual(expected, result, /*verbose=*/true, equal_options);
+  AssertDatumsApproxEqual(expected, result, /*verbose=*/true);
 }
 
 template <typename ArrowType>
@@ -1354,6 +1475,32 @@ TEST(TestDecimalMeanKernel, ScalarAggregateOptions) {
   }
 }
 
+TEST(TestNullMeanKernel, Basics) {
+  auto ty = null();
+  Datum null_result = std::make_shared<DoubleScalar>();
+  Datum zero_result = std::make_shared<DoubleScalar>(0);
+
+  EXPECT_THAT(Mean(ScalarFromJSON(ty, "null")), ResultWith(null_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[]")), ResultWith(null_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[null]")), ResultWith(null_result));
+  EXPECT_THAT(Mean(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"})),
+              ResultWith(null_result));
+
+  ScalarAggregateOptions options(/*skip_nulls=*/true, /*min_count=*/0);
+  EXPECT_THAT(Mean(ScalarFromJSON(ty, "null"), options), ResultWith(zero_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[null]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Mean(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+              ResultWith(zero_result));
+
+  options = ScalarAggregateOptions(/*skip_nulls=*/false, /*min_count=*/0);
+  EXPECT_THAT(Mean(ScalarFromJSON(ty, "null"), options), ResultWith(null_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[]"), options), ResultWith(zero_result));
+  EXPECT_THAT(Mean(ArrayFromJSON(ty, "[null]"), options), ResultWith(null_result));
+  EXPECT_THAT(Mean(ChunkedArrayFromJSON(ty, {"[null]", "[]", "[null, null]"}), options),
+              ResultWith(null_result));
+}
+
 //
 // Min / Max
 //
@@ -1488,7 +1635,7 @@ TEST_F(TestBooleanMinMaxKernel, Basics) {
 TYPED_TEST_SUITE(TestIntegerMinMaxKernel, PhysicalIntegralArrowTypes);
 TYPED_TEST(TestIntegerMinMaxKernel, Basics) {
   ScalarAggregateOptions options;
-  std::vector<std::string> chunked_input1 = {"[5, 1, 2, 3, 4]", "[9, 1, null, 3, 4]"};
+  std::vector<std::string> chunked_input1 = {"[5, 1, 2, 3, 4]", "[9, 8, null, 3, 4]"};
   std::vector<std::string> chunked_input2 = {"[5, null, 2, 3, 4]", "[9, 1, 2, 3, 4]"};
   std::vector<std::string> chunked_input3 = {"[5, 1, 2, 3, null]", "[9, 1, null, 3, 4]"};
   auto item_ty = default_type_instance<TypeParam>();
@@ -2219,7 +2366,7 @@ TYPED_TEST(TestNumericIndexKernel, Basics) {
   this->AssertIndexIs(chunked_input4, value, 5);
 
   EXPECT_RAISES_WITH_MESSAGE_THAT(
-      Invalid, ::testing::HasSubstr("Must provide IndexOptions"),
+      Invalid, ::testing::HasSubstr("Function 'index' cannot be called without options"),
       CallFunction("index", {ArrayFromJSON(this->type_singleton(), "[0]")}));
 }
 TYPED_TEST(TestNumericIndexKernel, Random) {
@@ -2385,6 +2532,7 @@ template <typename CType>
 void CheckModes(const Datum& array, const ModeOptions options,
                 const std::vector<CType>& expected_modes,
                 const std::vector<int64_t>& expected_counts) {
+  ARROW_SCOPED_TRACE("Mode Options: ", options.ToString());
   ASSERT_OK_AND_ASSIGN(Datum out, Mode(array, options));
   ValidateOutput(out);
   const StructArray out_array(out.array());
@@ -2396,7 +2544,28 @@ void CheckModes(const Datum& array, const ModeOptions options,
   for (int i = 0; i < out_array.length(); ++i) {
     // equal or nan equal
     ASSERT_TRUE((expected_modes[i] == out_modes[i]) ||
-                (expected_modes[i] != expected_modes[i] && out_modes[i] != out_modes[i]));
+                (expected_modes[i] != expected_modes[i] && out_modes[i] != out_modes[i]))
+        << "  Actual Value: " << out_modes[i] << "\n"
+        << "Expected Value: " << expected_modes[i];
+    ASSERT_EQ(expected_counts[i], out_counts[i]);
+  }
+}
+
+template <>
+void CheckModes<bool>(const Datum& array, const ModeOptions options,
+                      const std::vector<bool>& expected_modes,
+                      const std::vector<int64_t>& expected_counts) {
+  ARROW_SCOPED_TRACE("Mode Options: ", options.ToString());
+  ASSERT_OK_AND_ASSIGN(Datum out, Mode(array, options));
+  ValidateOutput(out);
+  const StructArray out_array(out.array());
+  ASSERT_EQ(out_array.length(), expected_modes.size());
+  ASSERT_EQ(out_array.num_fields(), 2);
+
+  const uint8_t* out_modes = out_array.field(0)->data()->GetValues<uint8_t>(1);
+  const int64_t* out_counts = out_array.field(1)->data()->GetValues<int64_t>(1);
+  for (int i = 0; i < out_array.length(); ++i) {
+    ASSERT_EQ(expected_modes[i], bit_util::GetBit(out_modes, i));
     ASSERT_EQ(expected_counts[i], out_counts[i]);
   }
 }
@@ -2495,6 +2664,7 @@ TEST_F(TestBooleanModeKernel, Basics) {
   this->AssertModeIs({"[true, null]", "[]", "[null, false]"}, false, 1);
   this->AssertModesEmpty({"[null, null]", "[]", "[null]"});
 
+  this->AssertModesAre("[true, false]", 2, {false, true}, {1, 1});
   this->AssertModesAre("[false, false, true, true, true, false]", 2, {false, true},
                        {3, 3});
   this->AssertModesAre("[true, null, false, false, null, true, null, null, true]", 100,
@@ -3171,6 +3341,7 @@ class TestPrimitiveQuantileKernel : public ::testing::Test {
 
     for (size_t i = 0; i < this->interpolations_.size(); ++i) {
       options.interpolation = this->interpolations_[i];
+      ARROW_SCOPED_TRACE("Quantile Options: ", options.ToString());
 
       ASSERT_OK_AND_ASSIGN(Datum out, Quantile(array, options));
       const auto& out_array = out.make_array();
@@ -3185,7 +3356,9 @@ class TestPrimitiveQuantileKernel : public ::testing::Test {
           const auto& numeric_scalar =
               checked_pointer_cast<DoubleScalar>(expected[j][i].scalar());
           ASSERT_TRUE((quantiles[j] == numeric_scalar->value) ||
-                      (std::isnan(quantiles[j]) && std::isnan(numeric_scalar->value)));
+                      (std::isnan(quantiles[j]) && std::isnan(numeric_scalar->value)))
+              << "  Actual Value: " << quantiles[j] << "\n"
+              << "Expected Value: " << numeric_scalar->value;
         }
       } else {
         AssertTypeEqual(out_array->type(), type_singleton());
@@ -3451,7 +3624,7 @@ TEST_F(TestInt64QuantileKernel, Int64) {
 #undef DOUBLE
 #undef O
 
-#ifndef __MINGW32__
+#if !defined(__MINGW32__) && !defined(__i386__)
 template <typename ArrowType>
 class TestRandomQuantileKernel : public TestPrimitiveQuantileKernel<ArrowType> {
   using CType = typename ArrowType::c_type;
@@ -3582,7 +3755,7 @@ class TestRandomQuantileKernel : public TestPrimitiveQuantileKernel<ArrowType> {
       const CType* values = array->data()->GetValues<CType>(1);
       const auto bitmap = array->null_bitmap_data();
       for (int64_t i = 0; i < array->length(); ++i) {
-        if ((!bitmap || BitUtil::GetBit(bitmap, array->data()->offset + i)) &&
+        if ((!bitmap || bit_util::GetBit(bitmap, array->data()->offset + i)) &&
             !std::isnan(static_cast<double>(values[i]))) {
           input[index++] = values[i];
         }

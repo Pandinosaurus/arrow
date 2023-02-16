@@ -21,17 +21,22 @@
 #include "arrow/dataset/file_base.h"
 #include "arrow/dataset/scanner.h"
 
+#include <mutex>
+
 namespace arrow {
 namespace dataset {
 namespace internal {
 
 void Initialize() {
-  static auto registry = compute::default_exec_factory_registry();
-  if (registry) {
-    InitializeScanner(registry);
-    InitializeDatasetWriter(registry);
-    registry = nullptr;
-  }
+  static std::once_flag flag;
+  std::call_once(flag, [] {
+    auto registry = compute::default_exec_factory_registry();
+    if (registry) {
+      InitializeScanner(registry);
+      InitializeScannerV2(registry);
+      InitializeDatasetWriter(registry);
+    }
+  });
 }
 
 }  // namespace internal

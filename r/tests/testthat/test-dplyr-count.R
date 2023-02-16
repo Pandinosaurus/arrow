@@ -15,13 +15,11 @@
 # specific language governing permissions and limitations
 # under the License.
 
-
-skip_if_not_available("dataset")
-
 library(dplyr, warn.conflicts = FALSE)
 
 tbl <- example_data
 tbl$some_grouping <- rep(c(1, 2), 5)
+tbl$another_grouping <- rep(c(1, 2), 5)
 
 test_that("count/tally", {
   compare_dplyr_binding(
@@ -86,6 +84,15 @@ test_that("count/tally with name arg", {
   compare_dplyr_binding(
     .input %>%
       tally(name = "new_col") %>%
+      collect(),
+    tbl
+  )
+})
+
+test_that("count returns an ungrouped tibble", {
+  compare_dplyr_binding(
+    .input %>%
+      count(some_grouping, another_grouping, sort = TRUE) %>%
       collect(),
     tbl
   )

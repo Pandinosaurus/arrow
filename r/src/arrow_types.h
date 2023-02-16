@@ -21,8 +21,6 @@
 
 #include "./arrow_cpp11.h"
 
-#if defined(ARROW_R_WITH_ARROW)
-
 #include <arrow/buffer.h>  // for RBuffer definition below
 #include <arrow/result.h>
 #include <arrow/status.h>
@@ -39,6 +37,8 @@
 #if defined(ARROW_R_WITH_DATASET)
 #include <arrow/dataset/type_fwd.h>
 #endif
+
+#include <arrow/compute/exec/options.h>
 
 #include <arrow/filesystem/type_fwd.h>
 #include <arrow/io/type_fwd.h>
@@ -60,6 +60,8 @@ class ExecNode;
 }  // namespace compute
 }  // namespace arrow
 
+class ExecPlanReader;
+
 #if defined(ARROW_R_WITH_PARQUET)
 #include <parquet/type_fwd.h>
 #endif
@@ -75,26 +77,47 @@ std::shared_ptr<arrow::RecordBatch> RecordBatch__from_arrays(SEXP, SEXP);
 arrow::MemoryPool* gc_memory_pool();
 arrow::compute::ExecContext* gc_context();
 
-#if (R_VERSION < R_Version(3, 5, 0))
-#define LOGICAL_RO(x) ((const int*)LOGICAL(x))
-#define INTEGER_RO(x) ((const int*)INTEGER(x))
-#define REAL_RO(x) ((const double*)REAL(x))
-#define COMPLEX_RO(x) ((const Rcomplex*)COMPLEX(x))
-#define STRING_PTR_RO(x) ((const SEXP*)STRING_PTR(x))
-#define RAW_RO(x) ((const Rbyte*)RAW(x))
-#define DATAPTR_RO(x) ((const void*)STRING_PTR(x))
-#define DATAPTR(x) (void*)STRING_PTR(x)
-#endif
-
 #define VECTOR_PTR_RO(x) ((const SEXP*)DATAPTR_RO(x))
 
 namespace arrow {
 
+// Most of the time we can safely call R code and assume that any evaluation
+// error will throw a cpp11::unwind_exception. There are other times (e.g.,
+// when using RTasks) that we need to wait for a background task to finish or
+// run cleanup code if execution fails. This class allows us to attach
+// the `token` required to reconstruct the cpp11::unwind_exception and throw it
+// when it is safe to do so. This is done automatically by StopIfNotOk(), which
+// checks for a .detail() inheriting from UnwindProtectDetail.
+class UnwindProtectDetail : public StatusDetail {
+ public:
+  SEXP token;
+  explicit UnwindProtectDetail(SEXP token) : token(token) {}
+  virtual const char* type_id() const { return "UnwindProtectDetail"; }
+  virtual std::string ToString() const { return "R code execution error"; }
+};
+
+static inline Status StatusUnwindProtect(SEXP token, std::string reason = "") {
+  return Status::Invalid("R code execution error (", reason, ")")
+      .WithDetail(std::make_shared<UnwindProtectDetail>(token));
+}
+
 static inline void StopIfNotOk(const Status& status) {
   if (!status.ok()) {
-    // ARROW-13039: be careful not to interpret our error message as a %-format string
-    std::string s = status.ToString();
-    cpp11::stop("%s", s.c_str());
+    auto detail = status.detail();
+    const UnwindProtectDetail* unwind_detail =
+        dynamic_cast<const UnwindProtectDetail*>(detail.get());
+    if (unwind_detail) {
+      throw cpp11::unwind_exception(unwind_detail->token);
+    } else {
+      // We need to translate this to "native" encoding for the error to be
+      // displayed properly using cpp11::stop()
+      std::string s = status.ToString();
+      cpp11::strings s_utf8 = cpp11::as_sexp(s);
+      const char* s_native = cpp11::safe[Rf_translateChar](s_utf8[0]);
+
+      // ARROW-13039: be careful not to interpret our error message as a %-format string
+      cpp11::stop("%s", s_native);
+    }
   }
 }
 
@@ -110,6 +133,35 @@ class RTasks;
 std::shared_ptr<arrow::DataType> InferArrowType(SEXP x);
 std::shared_ptr<arrow::Array> vec_to_arrow__reuse_memory(SEXP x);
 bool can_reuse_memory(SEXP x, const std::shared_ptr<arrow::DataType>& type);
+
+// These are the types of objects whose conversion to Arrow Arrays is handled
+// entirely in C++. Other types of objects are converted using the
+// infer_type() S3 generic and the as_arrow_array() S3 generic.
+// For data.frame, we need to recurse because the internal conversion
+// can't accomodate calling into R. If the user specifies a target type
+// and that target type is an ExtensionType, we also can't convert
+// natively (but we check for this separately when it applies).
+static inline bool can_convert_native(SEXP x) {
+  if (!Rf_isObject(x)) {
+    return true;
+  } else if (Rf_inherits(x, "data.frame")) {
+    for (R_xlen_t i = 0; i < Rf_xlength(x); i++) {
+      if (!can_convert_native(VECTOR_ELT(x, i))) {
+        return false;
+      }
+    }
+
+    return true;
+  } else {
+    return Rf_inherits(x, "factor") || Rf_inherits(x, "Date") ||
+           Rf_inherits(x, "integer64") || Rf_inherits(x, "POSIXct") ||
+           Rf_inherits(x, "hms") || Rf_inherits(x, "difftime") ||
+           Rf_inherits(x, "data.frame") || Rf_inherits(x, "arrow_binary") ||
+           Rf_inherits(x, "arrow_large_binary") ||
+           Rf_inherits(x, "arrow_fixed_size_binary") ||
+           Rf_inherits(x, "vctrs_unspecified") || Rf_inherits(x, "AsIs");
+  }
+}
 
 Status count_fields(SEXP lst, int* out);
 
@@ -190,6 +242,9 @@ bool is_arrow_altrep(SEXP x);
 std::shared_ptr<ChunkedArray> vec_to_arrow_altrep_bypass(SEXP);
 
 }  // namespace altrep
+
+bool DictionaryChunkArrayNeedUnification(
+    const std::shared_ptr<ChunkedArray>& chunked_array);
 
 }  // namespace r
 }  // namespace arrow
@@ -273,5 +328,3 @@ struct r6_class_name<ds::FileFormat> {
 #endif
 
 }  // namespace cpp11
-
-#endif

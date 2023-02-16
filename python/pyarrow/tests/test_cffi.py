@@ -239,6 +239,21 @@ def test_export_import_schema_with_extension():
     check_export_import_schema(make_extension_schema)
 
 
+@needs_cffi
+def test_export_import_schema_float_pointer():
+    # Previous versions of the R Arrow library used to pass pointer
+    # values as a double.
+    c_schema = ffi.new("struct ArrowSchema*")
+    ptr_schema = int(ffi.cast("uintptr_t", c_schema))
+
+    match = "Passing a pointer value as a float is unsafe"
+    with pytest.warns(UserWarning, match=match):
+        make_schema()._export_to_c(float(ptr_schema))
+    with pytest.warns(UserWarning, match=match):
+        schema_new = pa.Schema._import_from_c(float(ptr_schema))
+    assert schema_new == make_schema()
+
+
 def check_export_import_batch(batch_factory):
     c_schema = ffi.new("struct ArrowSchema*")
     ptr_schema = int(ffi.cast("uintptr_t", c_schema))
@@ -313,7 +328,7 @@ def _export_import_batch_reader(ptr_stream, reader_factory):
     # Delete and recreate C++ object from exported pointer
     del reader, batches
 
-    reader_new = pa.ipc.RecordBatchReader._import_from_c(ptr_stream)
+    reader_new = pa.RecordBatchReader._import_from_c(ptr_stream)
     assert reader_new.schema == schema
     got_batches = list(reader_new)
     del reader_new
@@ -329,7 +344,7 @@ def _export_import_batch_reader(ptr_stream, reader_factory):
         reader._export_to_c(ptr_stream)
         del reader, batches
 
-        reader_new = pa.ipc.RecordBatchReader._import_from_c(ptr_stream)
+        reader_new = pa.RecordBatchReader._import_from_c(ptr_stream)
         got_df = reader_new.read_pandas()
         del reader_new
         tm.assert_frame_equal(expected_df, got_df)
@@ -340,7 +355,7 @@ def make_ipc_stream_reader(schema, batches):
 
 
 def make_py_record_batch_reader(schema, batches):
-    return pa.ipc.RecordBatchReader.from_batches(schema, batches)
+    return pa.RecordBatchReader.from_batches(schema, batches)
 
 
 @needs_cffi
@@ -360,7 +375,7 @@ def test_export_import_batch_reader(reader_factory):
 
     # Now released
     with assert_stream_released:
-        pa.ipc.RecordBatchReader._import_from_c(ptr_stream)
+        pa.RecordBatchReader._import_from_c(ptr_stream)
 
 
 @needs_cffi
@@ -378,7 +393,7 @@ def test_imported_batch_reader_error():
     reader._export_to_c(ptr_stream)
     del reader
 
-    reader_new = pa.ipc.RecordBatchReader._import_from_c(ptr_stream)
+    reader_new = pa.RecordBatchReader._import_from_c(ptr_stream)
     batch = reader_new.read_next_batch()
     assert batch == batches[0]
     with pytest.raises(OSError,
@@ -391,7 +406,7 @@ def test_imported_batch_reader_error():
     reader._export_to_c(ptr_stream)
     del reader
 
-    reader_new = pa.ipc.RecordBatchReader._import_from_c(ptr_stream)
+    reader_new = pa.RecordBatchReader._import_from_c(ptr_stream)
     with pytest.raises(OSError,
                        match="Expected to be able to read 16 bytes "
                              "for message body, got 8"):

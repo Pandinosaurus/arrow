@@ -43,6 +43,15 @@ test_that("Scalar print", {
   expect_output(print(Scalar$create(4)), "Scalar\n4")
 })
 
+test_that("ExtensionType scalar behaviour", {
+  ext_array <- vctrs_extension_array(4)
+  ext_scalar <- Scalar$create(ext_array)
+  expect_equal(ext_scalar$as_array(), ext_array)
+  expect_identical(ext_scalar$as_vector(), 4)
+  expect_identical(ext_scalar$as_vector(10), rep(4, 10))
+  expect_output(print(ext_scalar), "Scalar\n4")
+})
+
 test_that("Creating Scalars of a different type and casting them", {
   expect_equal(Scalar$create(4L, int8())$type, int8())
   expect_equal(Scalar$create(4L)$cast(float32())$type, float32())
@@ -88,7 +97,7 @@ test_that("Handling string data with embedded nuls", {
   # The behavior of the warnings/errors is slightly different with and without
   # altrep. Without it (i.e. 3.5.0 and below, the error would trigger immediately
   # on `as.vector()` where as with it, the error only happens on materialization)
-  skip_if_r_version("3.5.0")
+  skip_on_r_older_than("3.6")
   v <- expect_error(as.vector(scalar_with_nul), NA)
   expect_error(
     v[1],
